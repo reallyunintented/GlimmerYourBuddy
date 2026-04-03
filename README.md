@@ -1,6 +1,6 @@
-# ✨ Glimmer — Local Archive for Claude Buddy Bubbles
+# ✨ Glimmer — Local Significance Archive for Claude Buddy Bubbles
 
-Glimmer captures Claude Code buddy speech bubbles and keeps them in a local, searchable archive with session context.
+Glimmer captures Claude Code buddy speech bubbles and keeps them in a local archive with session context, explicit mattered signals, and a lightweight review loop.
 
 No screenshots. No copying. Just a usable history.
 
@@ -16,10 +16,12 @@ When you use Claude Code with Glimmer enabled, it:
 - **Groups** auto-captured bubbles by Claude session
 - **Stores exact session context** like cwd, project name, repo root, and branch
 - **Tags** exact `/buddy pet` reactions and best-effort post-prompt bubbles
-- **Lets you browse** them in a local archive UI with recent, mattered, project, session, and search views
-- **Lets you mark** a bubble as mattered and attach a short note about why
+- **Lets you browse** them in a local archive UI with recent, mattered, review, project, session, and search views
+- **Lets you mark** a bubble as mattered, attach a short note, and move it through a review state
+- **Surfaces recurrence cues** so related mattered bubbles and repeated themes can come back later
+- **Exposes local interfaces** for people and tools through the UI, `glimmer-log`, and a small localhost JSON API
 
-It is a small local memory layer for things your Claude buddy said that were actually worth keeping.
+It is a local-first significance layer for things your Claude buddy said that actually changed the work.
 
 ---
 
@@ -84,6 +86,16 @@ glimmer-log --cleanup-raw 30
 # Open the local archive app
 glimmer-ui
 
+# Show mattered bubbles and review buckets
+glimmer-log --mattered
+glimmer-log --review
+
+# Mark the latest bubble and add a note
+glimmer-log --mark latest --note "This changed the direction."
+
+# Move a mattered bubble through the review loop
+glimmer-log --review-state latest open
+
 # Get stats
 glimmer-log --stats
 
@@ -96,7 +108,27 @@ glimmer-log --json
 glimmer-ui
 ```
 
-That opens a small local app for browsing recent bubbles, mattered bubbles, projects, sessions, and search. You can also mark a bubble as mattered and leave an optional note about why it mattered. It reads and writes only your local Glimmer files and does not upload anything.
+That opens a small local app for browsing recent bubbles, mattered bubbles, the review queue, projects, sessions, and search. You can mark a bubble as mattered, add a note, change its review state, and inspect related mattered bubbles plus recurrence hints. It reads and writes only your local Glimmer files and does not upload anything.
+
+### Use the Local API
+When `glimmer-ui` is running, it also exposes a small localhost JSON API:
+
+```bash
+curl -s http://127.0.0.1:8767/api/review
+curl -s http://127.0.0.1:8767/api/mattered
+curl -s http://127.0.0.1:8767/api/bubbles/<bubble-id>
+```
+
+Current routes:
+- `GET /api/index`
+- `GET /api/mattered`
+- `GET /api/review`
+- `GET /api/search?q=...`
+- `GET /api/bubbles/:id`
+- `POST /api/matters`
+- `POST /api/review-state`
+
+This API is local-only and meant to support the UI first. It is also the foundation for future agent integrations.
 
 ### Watcher Debug Output
 By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.
@@ -190,7 +222,7 @@ This is the watcher's own debug log.
 The watcher writes its internal status here instead of printing into Claude's fullscreen UI by default.
 
 ### `~/.claude/glimmer/mattered.json`
-This stores explicit mattered marks and optional notes from the local archive UI.
+This stores explicit mattered marks, optional notes, and review metadata from the local archive UI and CLI.
 
 Each entry is keyed by Glimmer's bubble id:
 ```json
@@ -198,12 +230,14 @@ Each entry is keyed by Glimmer's bubble id:
   "79f685c0ff19556e": {
     "note": "This changed the direction.",
     "marked_at": "2026-04-03T11:00:00+00:00",
-    "updated_at": "2026-04-03T11:05:00+00:00"
+    "updated_at": "2026-04-03T11:05:00+00:00",
+    "review_state": "open",
+    "reviewed_at": "2026-04-03T11:07:00+00:00"
   }
 }
 ```
 
-This file is used by `glimmer-ui` to show mattered counts, the dedicated mattered view, and any notes you attached to a bubble.
+This file is used by `glimmer-ui` and `glimmer-log` to show mattered counts, the review queue, recurrence cues, and any notes you attached to a bubble.
 
 ### Summary
 All bubbles are still saved locally. The split is:
@@ -226,7 +260,7 @@ mattered.json  explicit mattered marks and notes
 - **`glimmer-claude`** starts Claude inside `script`, creates a session id, writes a session manifest, and launches the watcher.
 - **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, and writes logs.
 - **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for.
-- **`glimmer-ui`** serves the local archive app, merges mattered marks and notes, and exposes the visual browser over localhost.
+- **`glimmer-ui`** serves the local archive app, merges mattered marks and review state, builds recurrence and resurface cues, and exposes the visual browser plus local JSON API over localhost.
 
 Session context is separate from trigger attribution:
 
@@ -315,8 +349,10 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Trigger tagging** — Exact `/buddy pet` and best-effort post-prompt attribution  
 ✅ **Cleaner terminal UI** — Watcher debug output is separate by default  
 ✅ **More stable capture** — Bubble text must survive more than one scan before logging  
-✅ **Local archive UI** — Recent, mattered, projects, sessions, and search  
-✅ **Human signal** — Mark bubbles as mattered and attach optional notes  
+✅ **Local archive UI** — Recent, mattered, review, projects, sessions, and search  
+✅ **Human signal** — Mark bubbles as mattered, attach notes, and move them through review states  
+✅ **Recurrence cues** — Related mattered bubbles and repeated themes can resurface later  
+✅ **Local machine interface** — `glimmer-log` mattered/review commands plus localhost JSON routes  
 ✅ **Lightweight** — Small local toolchain, minimal dependencies  
 ✅ **Privacy-first** — All data stays local  
 ✅ **Portable** — Works on any system with Python 3.7+ and Claude Code  
@@ -331,6 +367,15 @@ Only newer runs have session metadata. Older bubbles still remain visible in the
 Start one fresh run with:
 ```bash
 glimmer-claude
+```
+
+### `Review` is empty
+The review loop only starts once you mark a bubble as mattered.
+
+Try:
+```bash
+glimmer-log --mark latest --note "Worth revisiting."
+glimmer-log --review
 ```
 
 ### Want more technical detail?
@@ -355,8 +400,9 @@ Check out [CONTRIBUTING.md](CONTRIBUTING.md) for ideas and guidelines.
 
 Some ideas:
 - Export to HTML, Markdown, or other formats
-- IDE integration (VS Code, JetBrains, etc.)
-- Buddy quote analytics
+- Digest and recap commands
+- MCP / agent integration
+- Better recurrence heuristics
 
 ---
 
@@ -368,7 +414,7 @@ MIT — Use it, modify it, share it. Your buddy would approve.
 
 <div align="center">
 
-**Made for people who want a real local archive of buddy moments that mattered.**
+**Made for people who want a local significance layer for buddy moments that actually changed the work.**
 
 [Issues](https://github.com/reallyunintented/GlimmerYourBuddy/issues) · [Discussions](https://github.com/reallyunintented/GlimmerYourBuddy/discussions)
 

@@ -5,10 +5,10 @@ Found a bug? Have a feature idea? Love Glimmer and want to help?
 ## Ideas for Improvement
 
 - **Export formats** — HTML, JSON, plaintext collections
-- **Stats** — More detailed analytics on buddy comments
-- **Sync** — Optional cloud backup (respecting privacy)
+- **Digests** — Daily or weekly recap views over mattered bubbles
+- **Recurrence** — Better similarity heuristics and resurfacing rules
 - **Themes** — Alternative visual treatments for `glimmer-ui`
-- **Integration** — IDE plugins to view bubbles within your editor
+- **Integration** — MCP and editor integrations that can read local significance data
 
 ## Getting Started
 
@@ -28,9 +28,9 @@ The runtime is split on purpose:
 - `glimmer-watcher.py`
   Parses the raw terminal recording, extracts stable speech-bubble text, writes plain entries to `log.jsonl`, and writes richer auto-capture metadata to `events.jsonl`.
 - `glimmer-log`
-  Reads `log.jsonl` for the all-time plain view and reads `events.jsonl` plus `sessions/` for grouped session output.
+  Reads `log.jsonl` for the all-time plain view, reads `events.jsonl` plus `sessions/` for grouped session output, and can mark/review mattered bubbles from the terminal.
 - `glimmer-ui`
-  Runs the local archive app over localhost, merges mattered marks, and serves the frontend from `ui/`.
+  Runs the local archive app over localhost, merges mattered marks and review state, builds recurrence/resurface hints, and serves the frontend plus JSON API from `ui/`.
 
 Important storage paths:
 
@@ -45,7 +45,7 @@ Important storage paths:
 - `~/.claude/glimmer/watcher.log`
   Watcher debug output. The watcher should stay quiet on the Claude UI unless explicitly requested.
 - `~/.claude/glimmer/mattered.json`
-  Explicit mattered marks and optional notes created in the local archive UI.
+  Explicit mattered marks, optional notes, and review metadata created in the local archive UI or CLI.
 
 ## How Capture Works
 
@@ -60,7 +60,8 @@ This is the internal flow:
 7. The watcher requires the same bubble text to survive more than one scan before it logs it.
 8. The plain bubble is appended to `log.jsonl`.
 9. The richer auto-capture event is appended to `events.jsonl`.
-10. `glimmer-ui` can layer mattered marks and notes on top of captured bubbles via `mattered.json`.
+10. `glimmer-ui` can layer mattered marks and review state on top of captured bubbles via `mattered.json`.
+11. Shared review, recurrence, and resurface logic currently lives in `glimmer-ui` so the UI and future machine interfaces can consume the same output.
 11. When the session exits, `glimmer-claude` fills in `ended_at` in the manifest and stops the watcher.
 
 Why the split exists:
@@ -68,6 +69,7 @@ Why the split exists:
 - `log.jsonl` must stay stable and simple for compatibility.
 - `events.jsonl` can evolve to hold session ids, exact repo context, trigger metadata, and future sidecar fields.
 - `mattered.json` is user-authored signal and should stay separate from passive capture data.
+- review and recurrence logic should stay shared in backend builders, not duplicated across every client.
 - watcher debug output belongs in `watcher.log`, not on the shared fullscreen Claude terminal.
 
 ## Manifest Schema
@@ -142,8 +144,15 @@ Automated coverage lives under `tests/` and should cover:
 - `glimmer-log --cwd`
 - `glimmer-log --grep`
 - `glimmer-log --cleanup-raw`
+- `glimmer-log --mattered`
+- `glimmer-log --review`
+- `glimmer-log --mark`
+- `glimmer-log --review-state`
 - `glimmer-ui` index aggregation
 - mattered mark and note merging
+- review-state aggregation and API output
+- recurrence/resurface builders
+- enriched bubble detail context
 
 Run the automated suite with:
 
@@ -171,6 +180,7 @@ When changing parser behavior, check all of these:
 - `log.jsonl` remains plain and backward compatible
 - `events.jsonl` keeps session, exact repo context, and trigger metadata
 - mattered marks remain local-only and do not mutate capture logs
+- review and recurrence cues come from shared backend logic, not disconnected frontend-only guesses
 - the latest session manifest gets both `started_at` and `ended_at` plus correct repo context
 - a large or slowly painted bubble is not saved too early
 - the watcher still performs a final scan on shutdown
