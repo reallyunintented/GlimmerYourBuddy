@@ -1,0 +1,16 @@
+# User's captured bubbles (keep locally, don't push)
+.claude/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+.env
