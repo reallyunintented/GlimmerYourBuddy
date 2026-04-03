@@ -14,6 +14,12 @@ import re
 import signal
 import sys
 import time
+from contextlib import contextmanager
+import errno
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,11 +87,37 @@ def ensure_private_parent(path: Path) -> None:
     set_permissions(path.parent, PRIVATE_DIR_MODE)
 
 
+def lock_path_for(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def advisory_lock(path: Path):
+    ensure_private_parent(path)
+    with open(path, "a+", encoding="utf-8") as handle:
+        set_permissions(path, PRIVATE_FILE_MODE)
+        if fcntl is not None:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    break
+                except OSError as exc:  # pragma: no cover - signal interruption
+                    if exc.errno == errno.EINTR:
+                        continue
+                    raise
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def debug(message: str) -> None:
     ensure_private_parent(WATCHERLOG)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(WATCHERLOG, "a", encoding="utf-8") as handle:
-        handle.write(f"[{timestamp}] {message}\n")
+    with advisory_lock(lock_path_for(WATCHERLOG)):
+        with open(WATCHERLOG, "a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
     set_permissions(WATCHERLOG, PRIVATE_FILE_MODE)
     if VERBOSE_STDOUT:
         print(message, flush=True)
@@ -342,15 +374,17 @@ def build_legacy_entry(text: str, companion: str, timestamp: str) -> dict:
 
 def log_legacy_entry(entry: dict) -> None:
     ensure_private_parent(LOGFILE)
-    with open(LOGFILE, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    with advisory_lock(lock_path_for(LOGFILE)):
+        with open(LOGFILE, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
     set_permissions(LOGFILE, PRIVATE_FILE_MODE)
 
 
 def log_event_entry(entry: dict) -> None:
     ensure_private_parent(EVENTSFILE)
-    with open(EVENTSFILE, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    with advisory_lock(lock_path_for(EVENTSFILE)):
+        with open(EVENTSFILE, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
     set_permissions(EVENTSFILE, PRIVATE_FILE_MODE)
 
 

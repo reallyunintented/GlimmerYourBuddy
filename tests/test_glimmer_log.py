@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -262,6 +263,15 @@ class GlimmerLogLegacyCommandTests(unittest.TestCase):
         ]
         self.assertEqual(entries[-1]["companion"], "Vy")
         self.assertEqual(entries[-1]["text"], "Manual note")
+
+    def test_add_keeps_log_private(self):
+        self.run_glimmer_log("--add", "Manual note")
+
+        logfile_mode = stat.S_IMODE(self.logfile.stat().st_mode)
+        glimmer_dir_mode = stat.S_IMODE(self.glimmer_dir.stat().st_mode)
+
+        self.assertEqual(logfile_mode, 0o600)
+        self.assertEqual(glimmer_dir_mode, 0o700)
 
     def test_grep_filters_legacy_output_case_insensitively(self):
         output = self.run_glimmer_log("--grep", "patient")

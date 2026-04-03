@@ -3,7 +3,10 @@ from importlib.machinery import SourceFileLoader
 import json
 import stat
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -456,6 +459,40 @@ class GlimmerUIApiTests(unittest.TestCase):
                 [],
             )
 
+    def test_mutate_matters_updates_existing_state_under_one_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            matters_path = glimmer_dir / "mattered.json"
+
+            self.module.save_matters(
+                matters_path,
+                {
+                    "bubble-1": {
+                        "note": "Keep this.",
+                        "marked_at": "2026-04-03T11:00:00+00:00",
+                        "updated_at": "2026-04-03T11:00:00+00:00",
+                        "review_state": "open",
+                        "reviewed_at": "2026-04-03T11:00:00+00:00",
+                    }
+                },
+            )
+
+            def updater(matters):
+                matters["bubble-2"] = {
+                    "note": "Add another.",
+                    "marked_at": "2026-04-03T11:05:00+00:00",
+                    "updated_at": "2026-04-03T11:05:00+00:00",
+                    "review_state": "unreviewed",
+                    "reviewed_at": None,
+                }
+                return sorted(matters)
+
+            result = self.module.mutate_matters(matters_path, updater)
+            matters = self.module.load_matters(matters_path)
+
+            self.assertEqual(result, ["bubble-1", "bubble-2"])
+            self.assertEqual(sorted(matters), ["bubble-1", "bubble-2"])
+
     def test_bind_host_validation_requires_explicit_remote_opt_in(self):
         self.module.validate_bind_host("127.0.0.1", allow_remote=False)
         self.module.validate_bind_host("localhost", allow_remote=False)
@@ -493,6 +530,101 @@ class GlimmerUIApiTests(unittest.TestCase):
                 8767,
             )
         )
+
+    def test_basic_auth_matching_requires_valid_credentials(self):
+        token = "Basic " + __import__("base64").b64encode(
+            b"glimmer:secret-token"
+        ).decode("ascii")
+
+        self.assertTrue(
+            self.module.authorization_matches_basic_auth(
+                token,
+                "glimmer",
+                "secret-token",
+            )
+        )
+        self.assertFalse(
+            self.module.authorization_matches_basic_auth(
+                token,
+                "glimmer",
+                "wrong-token",
+            )
+        )
+        self.assertFalse(
+            self.module.authorization_matches_basic_auth(
+                "Bearer secret-token",
+                "glimmer",
+                "secret-token",
+            )
+        )
+
+    def test_remote_auth_requires_password_for_non_loopback_bind(self):
+        self.module.validate_remote_auth("127.0.0.1", True, None)
+        self.module.validate_remote_auth("0.0.0.0", True, "secret-token")
+
+        with self.assertRaises(SystemExit):
+            self.module.validate_remote_auth("0.0.0.0", True, None)
+
+
+class GlimmerUIServerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module()
+
+    def start_server(self, glimmer_dir: Path, *, auth_password: str | None = None):
+        try:
+            server = self.module.ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                self.module.GlimmerUIHandler,
+            )
+        except PermissionError:
+            self.skipTest("sandbox does not allow local socket binds")
+        server.config = {  # type: ignore[attr-defined]
+            "glimmer_dir": glimmer_dir,
+            "ui_dir": REPO_ROOT / "ui",
+            "allow_remote": False,
+            "auth_user": "glimmer",
+            "auth_password": auth_password,
+        }
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        return server
+
+    def test_health_endpoint_returns_security_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = self.start_server(Path(tmp))
+            url = f"http://127.0.0.1:{server.server_port}/api/health"
+
+            with urllib.request.urlopen(url) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload, {"ok": True})
+                self.assertEqual(response.headers["Cache-Control"], "no-store")
+                self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+
+    def test_auth_protects_server_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = self.start_server(Path(tmp), auth_password="secret-token")
+            url = f"http://127.0.0.1:{server.server_port}/api/health"
+
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(url)
+            self.assertEqual(ctx.exception.code, 401)
+
+            auth = __import__("base64").b64encode(
+                b"glimmer:secret-token"
+            ).decode("ascii")
+            request = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Basic {auth}"},
+            )
+            with urllib.request.urlopen(request) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload, {"ok": True})
 
 
 if __name__ == "__main__":

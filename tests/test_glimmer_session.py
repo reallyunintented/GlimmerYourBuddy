@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import stat
 import subprocess
 import tempfile
@@ -112,6 +113,33 @@ class DetectRepoContextTests(unittest.TestCase):
                 ["--model", "test"],
             )
 
+            mode = stat.S_IMODE(manifest_path.stat().st_mode)
+            self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
+
+    def test_finalize_preserves_existing_manifest_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sessions" / "sess-1.json"
+
+            self.module.write_manifest(
+                str(manifest_path),
+                "sess-1",
+                "2026-04-04T00:00:00+00:00",
+                "Glimmer",
+                "/tmp/session.raw",
+                tmp,
+                ["--model", "test"],
+            )
+
+            self.module.finalize_manifest(
+                str(manifest_path),
+                "sess-1",
+                "2026-04-04T00:10:00+00:00",
+            )
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["session_id"], "sess-1")
+            self.assertEqual(manifest["ended_at"], "2026-04-04T00:10:00+00:00")
+            self.assertEqual(manifest["raw_path"], "/tmp/session.raw")
             mode = stat.S_IMODE(manifest_path.stat().st_mode)
             self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
 

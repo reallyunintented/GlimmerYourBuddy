@@ -6,7 +6,15 @@ glimmer-ui — Local read-only browser for Glimmer bubbles.
 from __future__ import annotations
 
 import argparse
+import base64
+from contextlib import contextmanager
+import errno
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 import hashlib
+import hmac
 import ipaddress
 import json
 import mimetypes
@@ -98,6 +106,31 @@ def ensure_private_dir(path: Path) -> None:
     set_permissions(path, PRIVATE_DIR_MODE)
 
 
+def lock_path_for(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def advisory_lock(path: Path):
+    ensure_private_dir(path.parent)
+    with open(path, "a+", encoding="utf-8") as handle:
+        set_permissions(path, PRIVATE_FILE_MODE)
+        if fcntl is not None:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    break
+                except OSError as exc:  # pragma: no cover - signal interruption
+                    if exc.errno == errno.EINTR:
+                        continue
+                    raise
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def write_private_text(path: Path, content: str) -> None:
     ensure_private_dir(path.parent)
     fd, tmp_name = tempfile.mkstemp(
@@ -155,6 +188,17 @@ def validate_bind_host(host: str, allow_remote: bool) -> None:
     )
 
 
+def validate_remote_auth(host: str, allow_remote: bool, auth_password: str | None) -> None:
+    if not allow_remote or is_loopback_host(host):
+        return
+    if auth_password:
+        return
+    raise SystemExit(
+        "Refusing remote glimmer-ui access without HTTP auth. "
+        "Set GLIMMER_UI_AUTH_TOKEN or pass --auth-password-env."
+    )
+
+
 def url_host_for_display(host: str) -> str:
     normalized = normalize_host_value(host)
     if normalized == "0.0.0.0":
@@ -189,6 +233,29 @@ def origin_matches_host(
         443 if parsed.scheme == "https" else 80
     )
     return bool(host and origin_host == host and origin_port == port)
+
+
+def authorization_matches_basic_auth(
+    header_value: str | None,
+    username: str,
+    password: str,
+) -> bool:
+    if not header_value:
+        return False
+    scheme, _, token = header_value.partition(" ")
+    if scheme.lower() != "basic" or not token:
+        return False
+    try:
+        decoded = base64.b64decode(token, validate=True).decode("utf-8")
+    except Exception:
+        return False
+    provided_user, sep, provided_password = decoded.partition(":")
+    if not sep:
+        return False
+    return hmac.compare_digest(provided_user, username) and hmac.compare_digest(
+        provided_password,
+        password,
+    )
 
 
 def parse_timestamp(value: str | None) -> datetime | None:
@@ -245,6 +312,10 @@ def load_manifests(path: Path) -> dict[str, dict]:
 
 
 def load_matters(path: Path) -> dict[str, dict]:
+    return _load_matters_unlocked(path)
+
+
+def _load_matters_unlocked(path: Path) -> dict[str, dict]:
     if not path.exists():
         return {}
     try:
@@ -276,8 +347,21 @@ def normalize_matter(value: dict | None) -> dict:
 
 
 def save_matters(path: Path, matters: dict[str, dict]) -> None:
+    with advisory_lock(lock_path_for(path)):
+        _save_matters_unlocked(path, matters)
+
+
+def _save_matters_unlocked(path: Path, matters: dict[str, dict]) -> None:
     payload = json.dumps(matters, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     write_private_text(path, payload)
+
+
+def mutate_matters(path: Path, callback):
+    with advisory_lock(lock_path_for(path)):
+        matters = _load_matters_unlocked(path)
+        result = callback(matters)
+        _save_matters_unlocked(path, matters)
+        return result
 
 
 def bubble_id(entry: dict) -> str:
@@ -879,6 +963,16 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             return True
         return is_loopback_host(host)
 
+    def request_auth_allowed(self) -> bool:
+        auth_password = self.config.get("auth_password")
+        if not auth_password:
+            return True
+        return authorization_matches_basic_auth(
+            self.headers.get("Authorization"),
+            self.config.get("auth_user", "glimmer"),
+            auth_password,
+        )
+
     def request_origin_allowed(self) -> bool:
         host = self.headers.get("Host")
         if host is None:
@@ -891,7 +985,7 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         return True
 
     def send_security_headers(self) -> None:
-        self.send_security_headers()
+        self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -906,6 +1000,15 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             "base-uri 'none'; "
             "frame-ancestors 'none'",
         )
+
+    def send_auth_challenge(self) -> None:
+        self.send_response(401)
+        self.send_header(
+            "WWW-Authenticate",
+            'Basic realm="Glimmer", charset="UTF-8"',
+        )
+        self.send_security_headers()
+        self.end_headers()
 
     def parse_json_body(self) -> dict | None:
         content_length = self.headers.get("Content-Length")
@@ -941,13 +1044,16 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type or "application/octet-stream")
         self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(content)
 
     def do_GET(self) -> None:  # noqa: N802
         if not self.request_host_allowed():
             self.send_error(403, "Host not allowed")
+            return
+        if not self.request_auth_allowed():
+            self.send_auth_challenge()
             return
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
@@ -967,6 +1073,7 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             index = build_index(self.config["glimmer_dir"])
             self.send_json(build_review_view(index))
             return
+
 
         if parsed.path == "/api/search":
             index = build_index(self.config["glimmer_dir"])
@@ -1002,6 +1109,9 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         if not self.request_host_allowed():
             self.send_error(403, "Host not allowed")
             return
+        if not self.request_auth_allowed():
+            self.send_auth_challenge()
+            return
         if not self.request_origin_allowed():
             self.send_error(403, "Cross-origin POST not allowed")
             return
@@ -1028,16 +1138,16 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             return
 
         matters_path = self.config["glimmer_dir"] / MATTERS_FILE
-        matters = load_matters(matters_path)
         if parsed.path == "/api/matters":
-            matter = upsert_matter(
-                matters,
-                bubble_id,
-                marked=marked,
-                note=note,
+            matter = mutate_matters(
+                matters_path,
+                lambda matters: upsert_matter(
+                    matters,
+                    bubble_id,
+                    marked=marked,
+                    note=note,
+                ),
             )
-
-            save_matters(matters_path, matters)
             self.send_json(
                 {
                     "ok": True,
@@ -1047,17 +1157,22 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if bubble_id not in matters:
-            self.send_error(400, "Bubble must be marked as mattered first")
-            return
-
         review_state = str(payload.get("review_state") or "").strip()
         try:
-            matter = update_review_state(matters, bubble_id, review_state)
+            matter = mutate_matters(
+                matters_path,
+                lambda matters: update_review_state(
+                    matters,
+                    bubble_id,
+                    review_state,
+                ),
+            )
+        except KeyError:
+            self.send_error(400, "Bubble must be marked as mattered first")
+            return
         except ValueError as exc:
             self.send_error(400, str(exc))
             return
-        save_matters(matters_path, matters)
         self.send_json(
             {
                 "ok": True,
@@ -1074,6 +1189,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--glimmer-dir", default=str(DEFAULT_GLIMMER_DIR))
     parser.add_argument("--no-open", action="store_true")
     parser.add_argument(
+        "--auth-user",
+        default="glimmer",
+        help="HTTP Basic auth username when auth is enabled.",
+    )
+    parser.add_argument(
+        "--auth-password-env",
+        default="GLIMMER_UI_AUTH_TOKEN",
+        help="Environment variable name that stores the HTTP Basic auth password.",
+    )
+    parser.add_argument(
         "--allow-remote",
         action="store_true",
         help="Allow binding to non-loopback hosts. Use only behind your own auth boundary.",
@@ -1084,6 +1209,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     validate_bind_host(args.host, args.allow_remote)
+    auth_password = os.environ.get(args.auth_password_env or "") or None
+    validate_remote_auth(args.host, args.allow_remote, auth_password)
     glimmer_dir = Path(args.glimmer_dir).expanduser()
     ui_dir = resolve_ui_dir(Path(__file__))
     if not ui_dir.exists():
@@ -1094,12 +1221,17 @@ def main() -> int:
         "glimmer_dir": glimmer_dir,
         "ui_dir": ui_dir,
         "allow_remote": args.allow_remote,
+        "auth_user": args.auth_user,
+        "auth_password": auth_password,
     }
     url = f"http://{url_host_for_display(args.host)}:{server.server_port}/"
     print(f"Glimmer UI running at {url}")
     print(f"Reading data from {glimmer_dir}")
     if args.allow_remote:
-        print("Remote access is enabled. Add your own network boundary and auth.")
+        print(
+            "Remote access is enabled with HTTP auth. "
+            f"Use username '{args.auth_user}' and the password from {args.auth_password_env}."
+        )
     if not args.no_open:
         try:
             webbrowser.open(url)

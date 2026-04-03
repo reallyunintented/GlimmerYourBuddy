@@ -356,19 +356,69 @@ add_bubble() {
     local companion
     ts="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
     companion="$(get_companion_name)"
-    mkdir -p "$(dirname "$LOGFILE")"
     python3 - "$LOGFILE" "$ts" "$companion" "$text" <<'PY'
+from contextlib import contextmanager
+import errno
 import json
 import sys
+from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
+
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def set_permissions(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except (FileNotFoundError, PermissionError):
+        pass
+
+
+def ensure_private_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    set_permissions(path.parent, PRIVATE_DIR_MODE)
+
+
+def lock_path_for(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def advisory_lock(path: Path):
+    ensure_private_parent(path)
+    with open(path, "a+", encoding="utf-8") as handle:
+        set_permissions(path, PRIVATE_FILE_MODE)
+        if fcntl is not None:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    break
+                except OSError as exc:  # pragma: no cover - signal interruption
+                    if exc.errno == errno.EINTR:
+                        continue
+                    raise
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 logfile, timestamp, companion, text = sys.argv[1:5]
+logfile_path = Path(logfile)
 entry = {
     "timestamp": timestamp,
     "companion": companion,
     "text": text,
 }
-with open(logfile, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+with advisory_lock(lock_path_for(logfile_path)):
+    with open(logfile_path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    set_permissions(logfile_path, PRIVATE_FILE_MODE)
 print("Added.")
 PY
 }
@@ -588,14 +638,15 @@ if bubble is None:
     sys.exit(1)
 
 matters_path = glimmer_dir / module.MATTERS_FILE
-matters = module.load_matters(matters_path)
-matter = module.upsert_matter(
-    matters,
-    bubble["id"],
-    marked=marked,
-    note=note,
+matter = module.mutate_matters(
+    matters_path,
+    lambda matters: module.upsert_matter(
+        matters,
+        bubble["id"],
+        marked=marked,
+        note=note,
+    ),
 )
-module.save_matters(matters_path, matters)
 
 if marked:
     print(f'Marked {bubble["id"]}.')
@@ -645,17 +696,21 @@ if bubble is None:
     sys.exit(1)
 
 matters_path = glimmer_dir / module.MATTERS_FILE
-matters = module.load_matters(matters_path)
 try:
-    matter = module.update_review_state(matters, bubble["id"], review_state)
+    matter = module.mutate_matters(
+        matters_path,
+        lambda matters: module.update_review_state(
+            matters,
+            bubble["id"],
+            review_state,
+        ),
+    )
 except KeyError:
     print("Bubble must be marked as mattered first.", file=sys.stderr)
     sys.exit(1)
 except ValueError as exc:
     print(str(exc), file=sys.stderr)
     sys.exit(1)
-
-module.save_matters(matters_path, matters)
 print(f'Set {bubble["id"]} to {matter["review_state"]}.')
 PY
 }

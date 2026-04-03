@@ -10,6 +10,12 @@ Usage:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import errno
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    fcntl = None
 import json
 import os
 import subprocess
@@ -31,6 +37,31 @@ def _set_permissions(path: Path, mode: int) -> None:
 def _ensure_private_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _set_permissions(path.parent, PRIVATE_DIR_MODE)
+
+
+def _lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def _advisory_lock(path: Path):
+    _ensure_private_parent(path)
+    with open(path, "a+", encoding="utf-8") as handle:
+        _set_permissions(path, PRIVATE_FILE_MODE)
+        if fcntl is not None:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    break
+                except OSError as exc:  # pragma: no cover - signal interruption
+                    if exc.errno == errno.EINTR:
+                        continue
+                    raise
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -58,10 +89,32 @@ def _atomic_write_text(path: Path, content: str) -> None:
 
 
 def _write_private_json(path: Path, payload: dict) -> None:
-    _atomic_write_text(
-        path,
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-    )
+    with _advisory_lock(_lock_path(path)):
+        _atomic_write_text(
+            path,
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+
+
+def _load_private_json_unlocked(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _mutate_private_json(path: Path, callback):
+    with _advisory_lock(_lock_path(path)):
+        payload = _load_private_json_unlocked(path)
+        result = callback(payload)
+        _atomic_write_text(
+            path,
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        )
+        return result
 
 
 def _run_git(cwd: str, *args: str) -> str | None:
@@ -119,16 +172,11 @@ def write_manifest(
 
 def finalize_manifest(manifest_path: str, session_id: str, ended_at: str) -> None:
     path = Path(manifest_path)
-    manifest = {}
-    if path.exists():
-        try:
-            manifest = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            manifest = {}
+    def apply_finalize(manifest: dict) -> None:
+        manifest["session_id"] = manifest.get("session_id", session_id)
+        manifest["ended_at"] = ended_at
 
-    manifest["session_id"] = manifest.get("session_id", session_id)
-    manifest["ended_at"] = ended_at
-    _write_private_json(path, manifest)
+    _mutate_private_json(path, apply_finalize)
 
 
 def main() -> int:
