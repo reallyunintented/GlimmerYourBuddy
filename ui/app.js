@@ -1,6 +1,10 @@
 const state = {
   data: null,
+  reviewData: null,
+  bubbleDetail: null,
   loading: true,
+  detailLoading: false,
+  detailRequestId: 0,
   view: "recent",
   previousView: "recent",
   query: "",
@@ -52,58 +56,6 @@ const REVIEW_SORT_META = {
   recently_reviewed: "Recently reviewed",
   oldest_open: "Oldest open",
 };
-
-const RECURRENCE_STOP_WORDS = new Set([
-  "about",
-  "after",
-  "again",
-  "around",
-  "because",
-  "before",
-  "being",
-  "could",
-  "didn",
-  "does",
-  "doing",
-  "from",
-  "have",
-  "into",
-  "just",
-  "later",
-  "make",
-  "more",
-  "need",
-  "note",
-  "only",
-  "other",
-  "over",
-  "same",
-  "should",
-  "some",
-  "still",
-  "than",
-  "that",
-  "their",
-  "them",
-  "then",
-  "there",
-  "these",
-  "they",
-  "this",
-  "those",
-  "through",
-  "used",
-  "using",
-  "very",
-  "what",
-  "when",
-  "where",
-  "which",
-  "while",
-  "with",
-  "worth",
-  "would",
-]);
 
 const formatDateTime = (value) => {
   if (!value) return "Unknown";
@@ -168,28 +120,6 @@ const sessionForBubble = (bubble) => {
 const matteredBubbles = () =>
   (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
 
-const sessionNeighborsForBubble = (bubble) => {
-  const session = sessionForBubble(bubble);
-  if (!session?.bubbles?.length) return { previous: null, next: null };
-  const index = session.bubbles.findIndex((entry) => entry.id === bubble.id);
-  if (index === -1) return { previous: null, next: null };
-  return {
-    previous: session.bubbles[index - 1] ?? null,
-    next: session.bubbles[index + 1] ?? null,
-  };
-};
-
-const relatedMatteredForBubble = (bubble, limit = 3) =>
-  matteredBubbles()
-    .filter(
-      (entry) =>
-        entry.id !== bubble.id &&
-        entry.project_name &&
-        entry.project_name === bubble.project_name
-    )
-    .sort((left, right) => reviewSortKey(right) - reviewSortKey(left))
-    .slice(0, limit);
-
 const ensureReviewVisibilityForBubble = (bubbleId) => {
   const bubble = bubbleById(bubbleId);
   if (!bubble || state.view !== "review" || !bubble.mattered) return;
@@ -199,16 +129,19 @@ const ensureReviewVisibilityForBubble = (bubbleId) => {
   }
 };
 
-const recurrenceTextForBubble = (bubble) =>
-  [bubble.matter_note, bubble.text]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+const primeSelectedBubble = (bubbleId) => {
+  if (!bubbleId || state.selectedBubbleId === bubbleId) return;
+  state.selectedBubbleId = bubbleId;
+  state.bubbleDetail = null;
+  void loadBubbleDetail(bubbleId);
+};
 
 const setSelectedBubble = (bubbleId) => {
   state.selectedBubbleId = bubbleId;
+  state.bubbleDetail = null;
   renderDetail();
   renderMain();
+  void loadBubbleDetail(bubbleId);
 };
 
 const setView = (nextView, options = {}) => {
@@ -315,119 +248,11 @@ const reviewSortKey = (bubble) => {
   return Math.max(reviewedAt || 0, matteredAt || 0, timestamp || 0);
 };
 
-const recurrenceTokensForBubble = (bubble) => {
-  const source = recurrenceTextForBubble(bubble);
-  return Array.from(
-    new Set(
-      source
-        .split(/[^a-z0-9]+/g)
-        .map((token) => token.trim())
-        .filter(
-          (token) =>
-            token.length >= 4 &&
-            !RECURRENCE_STOP_WORDS.has(token) &&
-            !/^\d+$/.test(token)
-        )
-    )
-  );
-};
-
-const recurrenceMatchesForBubble = (bubble, limit = 3) => {
-  const baseTokens = recurrenceTokensForBubble(bubble);
-  if (!baseTokens.length) return [];
-  const baseTokenSet = new Set(baseTokens);
-
-  return matteredBubbles()
-    .filter((entry) => entry.id !== bubble.id)
-    .map((entry) => {
-      const sharedTokens = recurrenceTokensForBubble(entry).filter((token) =>
-        baseTokenSet.has(token)
-      );
-      const sameProject =
-        bubble.project_name &&
-        entry.project_name &&
-        bubble.project_name === entry.project_name;
-      const score = sharedTokens.length + (sameProject ? 1 : 0);
-      return {
-        bubble: entry,
-        sameProject,
-        sharedTokens,
-        score,
-      };
-    })
-    .filter(
-      (match) =>
-        match.sharedTokens.length >= 2 ||
-        (match.sameProject && match.sharedTokens.length >= 1)
-    )
-    .sort(
-      (left, right) =>
-        right.score - left.score ||
-        reviewSortKey(right.bubble) - reviewSortKey(left.bubble)
-    )
-    .slice(0, limit);
-};
-
-const resurfaceHints = () => {
-  const mattered = matteredBubbles();
-  const unreviewedWithNotes = mattered
-    .filter(
-      (bubble) =>
-        (bubble.review_state || "unreviewed") === "unreviewed" &&
-        (bubble.matter_note || "").trim()
-    )
-    .sort((left, right) => reviewSortKey(right) - reviewSortKey(left));
-  const oldestOpen = mattered
-    .filter((bubble) => (bubble.review_state || "unreviewed") === "open")
-    .sort((left, right) => reviewSortKey(left) - reviewSortKey(right));
-  const recurring = mattered
-    .map((bubble) => ({
-      bubble,
-      matches: recurrenceMatchesForBubble(bubble),
-    }))
-    .filter((entry) => entry.matches.length)
-    .sort(
-      (left, right) =>
-        right.matches.length - left.matches.length ||
-        reviewSortKey(right.bubble) - reviewSortKey(left.bubble)
-    );
-
-  return [
-    unreviewedWithNotes[0]
-      ? {
-          key: "needs_review",
-          label: "Needs first review",
-          bubble: unreviewedWithNotes[0],
-          copy: "Marked with a note, but still unreviewed.",
-        }
-      : null,
-    oldestOpen[0]
-      ? {
-          key: "oldest_open",
-          label: "Oldest open",
-          bubble: oldestOpen[0],
-          copy: "Has stayed open the longest in your review loop.",
-        }
-      : null,
-    recurring[0]
-      ? {
-          key: "recurring",
-          label: "Recurring signal",
-          bubble: recurring[0].bubble,
-          copy: `Shares themes with ${recurring[0].matches.length} other mattered bubble${recurring[0].matches.length === 1 ? "" : "s"}.`,
-        }
-      : null,
-  ].filter(Boolean);
-};
-
 const reviewGroups = () => {
-  const mattered = matteredBubbles();
   return REVIEW_STATES.map((reviewState) => ({
     key: reviewState,
     meta: REVIEW_META[reviewState],
-    bubbles: mattered.filter(
-      (bubble) => (bubble.review_state || "unreviewed") === reviewState
-    ),
+    bubbles: state.reviewData?.groups?.[reviewState] ?? [],
   }));
 };
 
@@ -635,7 +460,7 @@ const renderMattered = () => {
     return;
   }
   if (!bubbleById(state.selectedBubbleId)?.mattered) {
-    state.selectedBubbleId = mattered[0].id;
+    primeSelectedBubble(mattered[0].id);
   }
   renderBubbleGroups(mattered);
 };
@@ -657,7 +482,7 @@ const renderReview = () => {
   }
   if (!bubbleById(state.selectedBubbleId)?.mattered) {
     const firstBubble = groups.find((group) => group.bubbles[0])?.bubbles[0];
-    if (firstBubble) state.selectedBubbleId = firstBubble.id;
+    if (firstBubble) primeSelectedBubble(firstBubble.id);
   }
 
   const visibleGroups =
@@ -670,10 +495,10 @@ const renderReview = () => {
   );
   if (!visibleBubbleIds.has(state.selectedBubbleId)) {
     const firstVisibleBubble = visibleGroups.find((group) => group.bubbles[0])?.bubbles[0];
-    if (firstVisibleBubble) state.selectedBubbleId = firstVisibleBubble.id;
+    if (firstVisibleBubble) primeSelectedBubble(firstVisibleBubble.id);
   }
 
-  const hints = resurfaceHints();
+  const hints = state.reviewData?.hints ?? [];
 
   elements.mainContent.innerHTML = "";
   const stack = document.createElement("div");
@@ -786,12 +611,14 @@ const renderDetail = () => {
 
   const bubble = bubbleById(state.selectedBubbleId);
   if (bubble) {
-    const session = sessionForBubble(bubble);
+    const detail = state.bubbleDetail?.bubble?.id === bubble.id ? state.bubbleDetail : null;
+    const session = detail?.session ?? sessionForBubble(bubble);
     const detailBusy = state.matterSaving || state.reviewSaving;
     const reviewState = bubble.review_state || "unreviewed";
-    const neighbors = sessionNeighborsForBubble(bubble);
-    const relatedMattered = relatedMatteredForBubble(bubble);
-    const recurrenceMatches = recurrenceMatchesForBubble(bubble);
+    const previousBubble = detail?.previous_bubble ?? null;
+    const nextBubble = detail?.next_bubble ?? null;
+    const relatedMattered = detail?.related_mattered ?? [];
+    const recurrenceMatches = detail?.recurrence_matches ?? [];
     elements.detail.innerHTML = `
       <div class="detail-stack">
         <section class="detail-block">
@@ -827,6 +654,7 @@ const renderDetail = () => {
                 ? `<p class="matter-meta">Marked ${escapeHtml(formatDateTime(bubble.mattered_at))}${bubble.matter_updated_at && bubble.matter_updated_at !== bubble.mattered_at ? ` · updated ${escapeHtml(formatDateTime(bubble.matter_updated_at))}` : ""}</p>`
                 : ""
             }
+            ${state.detailLoading ? '<p class="matter-meta">Loading related context…</p>' : ""}
             ${
               bubble.mattered
                 ? `
@@ -880,13 +708,13 @@ const renderDetail = () => {
               <section class="detail-block">
                 <p class="eyebrow">Session Context</p>
                 <div class="context-list">
-                  <button class="context-link" ${neighbors.previous ? `data-jump-bubble="${neighbors.previous.id}"` : "disabled"}>
+                  <button class="context-link" ${previousBubble ? `data-jump-bubble="${previousBubble.id}"` : "disabled"}>
                     <span class="context-label">Previous bubble</span>
-                    <span class="context-copy">${escapeHtml(neighbors.previous?.preview || "None")}</span>
+                    <span class="context-copy">${escapeHtml(previousBubble?.preview || "None")}</span>
                   </button>
-                  <button class="context-link" ${neighbors.next ? `data-jump-bubble="${neighbors.next.id}"` : "disabled"}>
+                  <button class="context-link" ${nextBubble ? `data-jump-bubble="${nextBubble.id}"` : "disabled"}>
                     <span class="context-label">Next bubble</span>
-                    <span class="context-copy">${escapeHtml(neighbors.next?.preview || "None")}</span>
+                    <span class="context-copy">${escapeHtml(nextBubble?.preview || "None")}</span>
                   </button>
                 </div>
               </section>
@@ -1105,14 +933,53 @@ const render = () => {
   renderDetail();
 };
 
+const loadBubbleDetail = async (bubbleId) => {
+  const bubble = bubbleById(bubbleId);
+  if (!bubble) {
+    state.bubbleDetail = null;
+    state.detailLoading = false;
+    renderDetail();
+    return;
+  }
+
+  const requestId = state.detailRequestId + 1;
+  state.detailRequestId = requestId;
+  state.detailLoading = true;
+  renderDetail();
+  try {
+    const response = await fetch(`/api/bubbles/${encodeURIComponent(bubbleId)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`Bubble detail failed with ${response.status}`);
+    }
+    const payload = await response.json();
+    if (state.detailRequestId !== requestId) return;
+    state.bubbleDetail = payload;
+  } catch (error) {
+    console.error("Failed to load bubble detail:", error);
+    if (state.detailRequestId !== requestId) return;
+    state.bubbleDetail = null;
+  } finally {
+    if (state.detailRequestId === requestId) {
+      state.detailLoading = false;
+      renderDetail();
+    }
+  }
+};
+
 const loadData = async () => {
   state.loading = true;
   renderMain();
-  const response = await fetch("/api/index", { cache: "no-store" });
-  state.data = await response.json();
+  const [indexResponse, reviewResponse] = await Promise.all([
+    fetch("/api/index", { cache: "no-store" }),
+    fetch("/api/review", { cache: "no-store" }),
+  ]);
+  state.data = await indexResponse.json();
+  state.reviewData = await reviewResponse.json();
   state.loading = false;
 
-  if (!state.selectedBubbleId && state.data.bubbles[0]) {
+  if (!bubbleById(state.selectedBubbleId) && state.data.bubbles[0]) {
     state.selectedBubbleId = state.data.bubbles[0].id;
   }
   if (!state.selectedSessionId && state.data.sessions[0]) {
@@ -1123,6 +990,9 @@ const loadData = async () => {
   }
 
   render();
+  if (state.selectedBubbleId) {
+    void loadBubbleDetail(state.selectedBubbleId);
+  }
 };
 
 elements.navLinks.forEach((link) => {

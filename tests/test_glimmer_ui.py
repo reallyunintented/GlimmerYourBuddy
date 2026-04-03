@@ -76,6 +76,145 @@ def build_archive_fixture(module, glimmer_dir: Path, *, mattered: dict | None = 
     return bubble_id
 
 
+def build_recurrence_fixture(module, glimmer_dir: Path) -> dict[str, str]:
+    sessions_dir = glimmer_dir / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    events = [
+        {
+            "timestamp": "2026-04-03T10:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "Earlier context bubble.",
+            "source": "auto",
+            "bubble_seq": 1,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+        {
+            "timestamp": "2026-04-03T10:02:00+00:00",
+            "companion": "Glimmer",
+            "text": "Direction signal worth remembering.",
+            "source": "auto",
+            "bubble_seq": 2,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "post_prompt",
+            "trigger_confidence": "heuristic",
+        },
+        {
+            "timestamp": "2026-04-03T10:03:00+00:00",
+            "companion": "Glimmer",
+            "text": "Later context bubble with direction signal.",
+            "source": "auto",
+            "bubble_seq": 3,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+        {
+            "timestamp": "2026-04-03T11:10:00+00:00",
+            "companion": "Glimmer",
+            "text": "Recurring direction signal in beta.",
+            "source": "auto",
+            "bubble_seq": 1,
+            "session_id": "sess-2",
+            "cwd": "/work/beta",
+            "project_root": "/work/beta",
+            "project_name": "beta",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+    ]
+    write_jsonl(glimmer_dir / "events.jsonl", events)
+    write_jsonl(glimmer_dir / "log.jsonl", [])
+
+    manifests = [
+        {
+            "session_id": "sess-1",
+            "started_at": "2026-04-03T09:59:00+00:00",
+            "ended_at": "2026-04-03T10:05:00+00:00",
+            "companion": "Glimmer",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+        },
+        {
+            "session_id": "sess-2",
+            "started_at": "2026-04-03T11:09:00+00:00",
+            "ended_at": "2026-04-03T11:12:00+00:00",
+            "companion": "Glimmer",
+            "cwd": "/work/beta",
+            "project_root": "/work/beta",
+            "project_name": "beta",
+            "git_branch": "main",
+            "is_repo_root": True,
+        },
+    ]
+    for manifest in manifests:
+        (sessions_dir / f'{manifest["session_id"]}.json').write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    ids = {
+        "before": module.bubble_id(events[0]),
+        "focus": module.bubble_id(events[1]),
+        "after": module.bubble_id(events[2]),
+        "beta": module.bubble_id(events[3]),
+    }
+    (glimmer_dir / "mattered.json").write_text(
+        json.dumps(
+            {
+                ids["focus"]: {
+                    "note": "Need review on direction signal",
+                    "marked_at": "2026-04-03T10:06:00+00:00",
+                    "updated_at": "2026-04-03T10:06:00+00:00",
+                    "review_state": "unreviewed",
+                    "reviewed_at": None,
+                },
+                ids["after"]: {
+                    "note": "Direction signal remains open in alpha",
+                    "marked_at": "2026-04-03T10:07:00+00:00",
+                    "updated_at": "2026-04-03T10:08:00+00:00",
+                    "review_state": "open",
+                    "reviewed_at": "2026-04-03T10:08:00+00:00",
+                },
+                ids["beta"]: {
+                    "note": "Direction signal recurring concern in beta",
+                    "marked_at": "2026-04-03T11:11:00+00:00",
+                    "updated_at": "2026-04-03T11:12:00+00:00",
+                    "review_state": "used",
+                    "reviewed_at": "2026-04-03T11:12:00+00:00",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ids
+
+
 class GlimmerUIIndexTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -221,6 +360,31 @@ class GlimmerUIApiTests(unittest.TestCase):
             self.assertEqual(bubble["bubble"]["id"], bubble_id)
             self.assertEqual(bubble["session"]["session_id"], "sess-1")
             self.assertEqual(bubble["project"]["project_key"], "alpha")
+
+    def test_review_and_bubble_views_include_resurface_and_recurrence_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            ids = build_recurrence_fixture(self.module, glimmer_dir)
+
+            index = self.module.build_index(glimmer_dir)
+            review = self.module.build_review_view(index)
+            bubble = self.module.build_bubble_view(index, ids["focus"])
+
+            self.assertEqual(review["counts"]["mattered"], 3)
+            self.assertEqual(
+                {hint["key"] for hint in review["hints"]},
+                {"needs_review", "oldest_open", "recurring"},
+            )
+            self.assertEqual(bubble["previous_bubble"]["id"], ids["before"])
+            self.assertEqual(bubble["next_bubble"]["id"], ids["after"])
+            self.assertEqual(bubble["related_mattered"][0]["id"], ids["after"])
+            self.assertEqual(len(bubble["recurrence_matches"]), 2)
+            self.assertEqual(bubble["recurrence_matches"][0]["bubble"]["id"], ids["after"])
+            self.assertEqual(
+                {match["bubble"]["id"] for match in bubble["recurrence_matches"]},
+                {ids["after"], ids["beta"]},
+            )
+            self.assertIn("direction", bubble["recurrence_matches"][0]["shared_tokens"])
 
     def test_upsert_matter_defaults_review_state_to_unreviewed(self):
         bubble_id = "bubble-123"

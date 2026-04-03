@@ -25,6 +25,57 @@ REVIEW_STATES = (
     "used",
     "stale",
 )
+RECURRENCE_STOP_WORDS = {
+    "about",
+    "after",
+    "again",
+    "around",
+    "because",
+    "before",
+    "being",
+    "could",
+    "didn",
+    "does",
+    "doing",
+    "from",
+    "have",
+    "into",
+    "just",
+    "later",
+    "make",
+    "more",
+    "need",
+    "note",
+    "only",
+    "other",
+    "over",
+    "same",
+    "should",
+    "some",
+    "still",
+    "than",
+    "that",
+    "their",
+    "them",
+    "then",
+    "there",
+    "these",
+    "they",
+    "this",
+    "those",
+    "through",
+    "used",
+    "using",
+    "very",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "with",
+    "worth",
+    "would",
+}
 
 DEFAULT_GLIMMER_DIR = Path(
     os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer")
@@ -279,24 +330,163 @@ def mattered_sort_key(bubble: dict) -> tuple[tuple[int, str], tuple[int, str], s
     )
 
 
+def review_sort_key(bubble: dict) -> tuple[tuple[int, str], tuple[int, str], tuple[int, str], str]:
+    return (
+        timestamp_sort_key(bubble.get("reviewed_at")),
+        timestamp_sort_key(bubble.get("mattered_at")),
+        timestamp_sort_key(bubble.get("timestamp")),
+        bubble.get("id", ""),
+    )
+
+
+def mattered_bubbles(index: dict) -> list[dict]:
+    return [bubble for bubble in index["bubbles"] if bubble.get("mattered")]
+
+
+def recurrence_text_for_bubble(bubble: dict) -> str:
+    return " ".join(
+        part.strip().lower()
+        for part in (
+            str(bubble.get("matter_note") or ""),
+            str(bubble.get("text") or ""),
+        )
+        if part
+    )
+
+
+def recurrence_tokens_for_bubble(bubble: dict) -> list[str]:
+    tokens = []
+    for token in recurrence_text_for_bubble(bubble).split():
+        cleaned = "".join(char for char in token if char.isalnum())
+        if len(cleaned) < 4 or cleaned.isdigit():
+            continue
+        if cleaned in RECURRENCE_STOP_WORDS:
+            continue
+        tokens.append(cleaned)
+    return sorted(set(tokens))
+
+
+def recurrence_matches_for_bubble(index: dict, bubble: dict, limit: int = 3) -> list[dict]:
+    base_tokens = recurrence_tokens_for_bubble(bubble)
+    if not base_tokens:
+        return []
+    base_token_set = set(base_tokens)
+    matches = []
+    for candidate in mattered_bubbles(index):
+        if candidate.get("id") == bubble.get("id"):
+            continue
+        shared_tokens = [
+            token
+            for token in recurrence_tokens_for_bubble(candidate)
+            if token in base_token_set
+        ]
+        same_project = bool(
+            bubble.get("project_name")
+            and candidate.get("project_name")
+            and bubble.get("project_name") == candidate.get("project_name")
+        )
+        score = len(shared_tokens) + (1 if same_project else 0)
+        if len(shared_tokens) < 2 and not (same_project and shared_tokens):
+            continue
+        matches.append(
+            {
+                "bubble": candidate,
+                "same_project": same_project,
+                "shared_tokens": shared_tokens,
+                "score": score,
+            }
+        )
+    matches.sort(
+        key=lambda entry: (entry["score"], review_sort_key(entry["bubble"])),
+        reverse=True,
+    )
+    return matches[:limit]
+
+
+def build_resurface_hints(index: dict) -> list[dict]:
+    mattered = mattered_bubbles(index)
+    unreviewed_with_notes = sorted(
+        [
+            bubble
+            for bubble in mattered
+            if bubble.get("review_state") == DEFAULT_REVIEW_STATE
+            and str(bubble.get("matter_note") or "").strip()
+        ],
+        key=review_sort_key,
+        reverse=True,
+    )
+    oldest_open = sorted(
+        [bubble for bubble in mattered if bubble.get("review_state") == "open"],
+        key=mattered_sort_key,
+    )
+    recurring = sorted(
+        [
+            {
+                "bubble": bubble,
+                "matches": recurrence_matches_for_bubble(index, bubble),
+            }
+            for bubble in mattered
+        ],
+        key=lambda entry: (
+            len(entry["matches"]),
+            review_sort_key(entry["bubble"]),
+        ),
+        reverse=True,
+    )
+
+    hints = []
+    if unreviewed_with_notes:
+        hints.append(
+            {
+                "key": "needs_review",
+                "label": "Needs first review",
+                "copy": "Marked with a note, but still unreviewed.",
+                "bubble": unreviewed_with_notes[0],
+            }
+        )
+    if oldest_open:
+        hints.append(
+            {
+                "key": "oldest_open",
+                "label": "Oldest open",
+                "copy": "Has stayed open the longest in your review loop.",
+                "bubble": oldest_open[0],
+            }
+        )
+    if recurring and recurring[0]["matches"]:
+        hints.append(
+            {
+                "key": "recurring",
+                "label": "Recurring signal",
+                "copy": (
+                    "Shares themes with "
+                    f'{len(recurring[0]["matches"])} other mattered bubble'
+                    f'{"s" if len(recurring[0]["matches"]) != 1 else ""}.'
+                ),
+                "bubble": recurring[0]["bubble"],
+            }
+        )
+    return hints
+
+
 def build_mattered_view(index: dict) -> dict:
-    mattered_bubbles = sorted(
-        [bubble for bubble in index["bubbles"] if bubble.get("mattered")],
+    bubbles = sorted(
+        mattered_bubbles(index),
         key=mattered_sort_key,
         reverse=True,
     )
-    counts = {"mattered": len(mattered_bubbles)}
+    counts = {"mattered": len(bubbles)}
     for review_state in REVIEW_STATES:
         counts[review_state] = sum(
             1
-            for bubble in mattered_bubbles
+            for bubble in bubbles
             if bubble.get("review_state") == review_state
         )
     return {
         "generated_at": index["generated_at"],
-        "count": len(mattered_bubbles),
+        "count": len(bubbles),
         "counts": counts,
-        "bubbles": mattered_bubbles,
+        "bubbles": bubbles,
     }
 
 
@@ -314,6 +504,7 @@ def build_review_view(index: dict) -> dict:
             **{review_state: len(groups[review_state]) for review_state in REVIEW_STATES},
         },
         "groups": groups,
+        "hints": build_resurface_hints(index),
     }
 
 
@@ -379,11 +570,41 @@ def build_bubble_view(index: dict, bubble_id: str) -> dict | None:
         ),
         None,
     )
+    previous_bubble = None
+    next_bubble = None
+    if session and session.get("bubbles"):
+        bubbles = session["bubbles"]
+        try:
+            bubble_index = next(
+                idx for idx, candidate in enumerate(bubbles) if candidate.get("id") == bubble_id
+            )
+        except StopIteration:
+            bubble_index = -1
+        if bubble_index >= 0:
+            if bubble_index > 0:
+                previous_bubble = bubbles[bubble_index - 1]
+            if bubble_index + 1 < len(bubbles):
+                next_bubble = bubbles[bubble_index + 1]
+    related_mattered = sorted(
+        [
+            candidate
+            for candidate in mattered_bubbles(index)
+            if candidate.get("id") != bubble_id
+            and candidate.get("project_name")
+            and candidate.get("project_name") == bubble.get("project_name")
+        ],
+        key=review_sort_key,
+        reverse=True,
+    )[:3]
     return {
         "generated_at": index["generated_at"],
         "bubble": bubble,
         "session": session,
         "project": project,
+        "previous_bubble": previous_bubble,
+        "next_bubble": next_bubble,
+        "related_mattered": related_mattered,
+        "recurrence_matches": recurrence_matches_for_bubble(index, bubble),
     }
 
 
