@@ -712,6 +712,46 @@ input {
   line-height: 1.5;
 }
 
+.resurface-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.resurface-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 15px;
+  text-align: left;
+  border: 1px solid rgba(49, 92, 122, 0.18);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(49, 92, 122, 0.05), transparent 50%),
+    var(--panel-strong);
+  color: var(--text);
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.resurface-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(49, 92, 122, 0.28);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.resurface-card strong {
+  font-family: var(--heading-font);
+  font-size: 1rem;
+  color: var(--text-strong);
+}
+
+.resurface-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 0.92rem;
+}
+
 @media (max-width: 1180px) {
   .shell {
     grid-template-columns: 240px minmax(0, 1fr);

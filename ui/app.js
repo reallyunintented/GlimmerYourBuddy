@@ -53,6 +53,58 @@ const REVIEW_SORT_META = {
   oldest_open: "Oldest open",
 };
 
+const RECURRENCE_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "around",
+  "because",
+  "before",
+  "being",
+  "could",
+  "didn",
+  "does",
+  "doing",
+  "from",
+  "have",
+  "into",
+  "just",
+  "later",
+  "make",
+  "more",
+  "need",
+  "note",
+  "only",
+  "other",
+  "over",
+  "same",
+  "should",
+  "some",
+  "still",
+  "than",
+  "that",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "through",
+  "used",
+  "using",
+  "very",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "with",
+  "worth",
+  "would",
+]);
+
 const formatDateTime = (value) => {
   if (!value) return "Unknown";
   const date = new Date(value);
@@ -137,6 +189,21 @@ const relatedMatteredForBubble = (bubble, limit = 3) =>
     )
     .sort((left, right) => reviewSortKey(right) - reviewSortKey(left))
     .slice(0, limit);
+
+const ensureReviewVisibilityForBubble = (bubbleId) => {
+  const bubble = bubbleById(bubbleId);
+  if (!bubble || state.view !== "review" || !bubble.mattered) return;
+  const reviewState = bubble.review_state || "unreviewed";
+  if (state.reviewFilter !== "all" && state.reviewFilter !== reviewState) {
+    state.reviewFilter = reviewState;
+  }
+};
+
+const recurrenceTextForBubble = (bubble) =>
+  [bubble.matter_note, bubble.text]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 
 const setSelectedBubble = (bubbleId) => {
   state.selectedBubbleId = bubbleId;
@@ -246,6 +313,111 @@ const reviewSortKey = (bubble) => {
   const matteredAt = bubble.mattered_at ? new Date(bubble.mattered_at).getTime() : 0;
   const timestamp = bubble.timestamp ? new Date(bubble.timestamp).getTime() : 0;
   return Math.max(reviewedAt || 0, matteredAt || 0, timestamp || 0);
+};
+
+const recurrenceTokensForBubble = (bubble) => {
+  const source = recurrenceTextForBubble(bubble);
+  return Array.from(
+    new Set(
+      source
+        .split(/[^a-z0-9]+/g)
+        .map((token) => token.trim())
+        .filter(
+          (token) =>
+            token.length >= 4 &&
+            !RECURRENCE_STOP_WORDS.has(token) &&
+            !/^\d+$/.test(token)
+        )
+    )
+  );
+};
+
+const recurrenceMatchesForBubble = (bubble, limit = 3) => {
+  const baseTokens = recurrenceTokensForBubble(bubble);
+  if (!baseTokens.length) return [];
+  const baseTokenSet = new Set(baseTokens);
+
+  return matteredBubbles()
+    .filter((entry) => entry.id !== bubble.id)
+    .map((entry) => {
+      const sharedTokens = recurrenceTokensForBubble(entry).filter((token) =>
+        baseTokenSet.has(token)
+      );
+      const sameProject =
+        bubble.project_name &&
+        entry.project_name &&
+        bubble.project_name === entry.project_name;
+      const score = sharedTokens.length + (sameProject ? 1 : 0);
+      return {
+        bubble: entry,
+        sameProject,
+        sharedTokens,
+        score,
+      };
+    })
+    .filter(
+      (match) =>
+        match.sharedTokens.length >= 2 ||
+        (match.sameProject && match.sharedTokens.length >= 1)
+    )
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        reviewSortKey(right.bubble) - reviewSortKey(left.bubble)
+    )
+    .slice(0, limit);
+};
+
+const resurfaceHints = () => {
+  const mattered = matteredBubbles();
+  const unreviewedWithNotes = mattered
+    .filter(
+      (bubble) =>
+        (bubble.review_state || "unreviewed") === "unreviewed" &&
+        (bubble.matter_note || "").trim()
+    )
+    .sort((left, right) => reviewSortKey(right) - reviewSortKey(left));
+  const oldestOpen = mattered
+    .filter((bubble) => (bubble.review_state || "unreviewed") === "open")
+    .sort((left, right) => reviewSortKey(left) - reviewSortKey(right));
+  const recurring = mattered
+    .map((bubble) => ({
+      bubble,
+      matches: recurrenceMatchesForBubble(bubble),
+    }))
+    .filter((entry) => entry.matches.length)
+    .sort(
+      (left, right) =>
+        right.matches.length - left.matches.length ||
+        reviewSortKey(right.bubble) - reviewSortKey(left.bubble)
+    );
+
+  return [
+    unreviewedWithNotes[0]
+      ? {
+          key: "needs_review",
+          label: "Needs first review",
+          bubble: unreviewedWithNotes[0],
+          copy: "Marked with a note, but still unreviewed.",
+        }
+      : null,
+    oldestOpen[0]
+      ? {
+          key: "oldest_open",
+          label: "Oldest open",
+          bubble: oldestOpen[0],
+          copy: "Has stayed open the longest in your review loop.",
+        }
+      : null,
+    recurring[0]
+      ? {
+          key: "recurring",
+          label: "Recurring signal",
+          bubble: recurring[0].bubble,
+          copy: `Shares themes with ${recurring[0].matches.length} other mattered bubble${recurring[0].matches.length === 1 ? "" : "s"}.`,
+        }
+      : null,
+  ].filter(Boolean);
 };
 
 const reviewGroups = () => {
@@ -501,6 +673,8 @@ const renderReview = () => {
     if (firstVisibleBubble) state.selectedBubbleId = firstVisibleBubble.id;
   }
 
+  const hints = resurfaceHints();
+
   elements.mainContent.innerHTML = "";
   const stack = document.createElement("div");
   stack.className = "section-stack";
@@ -553,6 +727,26 @@ const renderReview = () => {
         </select>
       </label>
     </section>
+    ${
+      hints.length
+        ? `
+          <section class="resurface-strip">
+            ${hints
+              .map(
+                (hint) => `
+                  <button class="resurface-card" data-jump-bubble="${hint.bubble.id}">
+                    <span class="context-label">${escapeHtml(hint.label)}</span>
+                    <strong>${escapeHtml(hint.bubble.project_name || "No project")}</strong>
+                    <p>${escapeHtml(hint.copy)}</p>
+                    <span class="context-copy">${escapeHtml(hint.bubble.preview)}</span>
+                  </button>
+                `
+              )
+              .join("")}
+          </section>
+        `
+        : ""
+    }
   `;
 
   visibleGroups.forEach((group) => {
@@ -597,6 +791,7 @@ const renderDetail = () => {
     const reviewState = bubble.review_state || "unreviewed";
     const neighbors = sessionNeighborsForBubble(bubble);
     const relatedMattered = relatedMatteredForBubble(bubble);
+    const recurrenceMatches = recurrenceMatchesForBubble(bubble);
     elements.detail.innerHTML = `
       <div class="detail-stack">
         <section class="detail-block">
@@ -710,6 +905,29 @@ const renderDetail = () => {
                         <button class="context-link" data-jump-bubble="${entry.id}">
                           <span class="context-label">${escapeHtml(REVIEW_META[entry.review_state || "unreviewed"]?.label || "Mattered")} · ${escapeHtml(formatShort(entry.mattered_at || entry.timestamp))}</span>
                           <span class="context-copy">${escapeHtml(entry.preview)}</span>
+                        </button>
+                      `
+                    )
+                    .join("")}
+                </div>
+              </section>
+            `
+            : ""
+        }
+        ${
+          recurrenceMatches.length
+            ? `
+              <section class="detail-block">
+                <p class="eyebrow">Recurring Signals</p>
+                <div class="context-list">
+                  ${recurrenceMatches
+                    .map(
+                      (match) => `
+                        <button class="context-link" data-jump-bubble="${match.bubble.id}">
+                          <span class="context-label">
+                            ${match.sameProject ? "Same project" : "Cross-project"} · shared ${escapeHtml(match.sharedTokens.slice(0, 3).join(", "))}
+                          </span>
+                          <span class="context-copy">${escapeHtml(match.bubble.preview)}</span>
                         </button>
                       `
                     )
@@ -1016,6 +1234,7 @@ document.addEventListener("click", (event) => {
 
   const jumpBubbleButton = event.target.closest("[data-jump-bubble]");
   if (jumpBubbleButton && !jumpBubbleButton.disabled) {
+    ensureReviewVisibilityForBubble(jumpBubbleButton.dataset.jumpBubble);
     setSelectedBubble(jumpBubbleButton.dataset.jumpBubble);
   }
 });
