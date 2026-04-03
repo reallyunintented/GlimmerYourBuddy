@@ -73,6 +73,13 @@ glimmer-log --branch main
 glimmer-log --cwd ~/src/GlimmerYourBuddy
 glimmer-log --repo-root-only
 
+# Search captured bubble text
+glimmer-log --grep patience
+
+# Remove old raw capture files
+glimmer-log --cleanup-raw
+glimmer-log --cleanup-raw 30
+
 # Get stats
 glimmer-log --stats
 
@@ -93,6 +100,8 @@ Heard something great and want to log it manually?
 ```bash
 glimmer-log --add "This is something brilliant my buddy said"
 ```
+
+Manual adds use your configured Claude companion name when available.
 
 ---
 

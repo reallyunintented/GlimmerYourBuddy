@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -189,6 +190,88 @@ class GlimmerLogSessionFilterTests(unittest.TestCase):
         self.assertIn("sess-root", output)
         self.assertNotIn("sess-subdir", output)
         self.assertNotIn("sess-home", output)
+
+
+class GlimmerLogLegacyCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.home = Path(self.tempdir.name)
+        self.glimmer_dir = self.home / ".claude" / "glimmer"
+        self.glimmer_dir.mkdir(parents=True)
+        self.logfile = self.glimmer_dir / "log.jsonl"
+        self.raw_dir = self.glimmer_dir / "raw"
+        self.raw_dir.mkdir()
+        self.claude_config = self.home / ".claude.json"
+        self._write_log_fixture()
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _write_log_fixture(self):
+        write_jsonl(
+            self.logfile,
+            [
+                {
+                    "timestamp": "2026-04-03T10:01:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "First debugging whisper",
+                },
+                {
+                    "timestamp": "2026-04-03T10:02:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "Second patient bubble",
+                },
+            ],
+        )
+
+    def run_glimmer_log(self, *args: str) -> str:
+        env = os.environ.copy()
+        env["HOME"] = str(self.home)
+        completed = subprocess.run(
+            ["bash", str(GLIMMER_LOG), *args],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout
+
+    def test_add_uses_configured_companion_name(self):
+        self.claude_config.write_text(
+            json.dumps({"companion": {"name": "Vy"}}, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        self.run_glimmer_log("--add", "Manual note")
+
+        entries = [
+            json.loads(line)
+            for line in self.logfile.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(entries[-1]["companion"], "Vy")
+        self.assertEqual(entries[-1]["text"], "Manual note")
+
+    def test_grep_filters_legacy_output_case_insensitively(self):
+        output = self.run_glimmer_log("--grep", "patient")
+
+        self.assertIn("Second patient bubble", output)
+        self.assertNotIn("First debugging whisper", output)
+
+    def test_cleanup_raw_removes_only_old_files(self):
+        old_raw = self.raw_dir / "session-old.raw"
+        fresh_raw = self.raw_dir / "session-fresh.raw"
+        old_raw.write_text("old\n", encoding="utf-8")
+        fresh_raw.write_text("fresh\n", encoding="utf-8")
+        now = time.time()
+        os.utime(old_raw, (now - 20 * 86400, now - 20 * 86400))
+        os.utime(fresh_raw, (now, now))
+
+        output = self.run_glimmer_log("--cleanup-raw", "14")
+
+        self.assertIn("Removed 1 raw capture file(s) older than 14 days.", output)
+        self.assertFalse(old_raw.exists())
+        self.assertTrue(fresh_raw.exists())
 
 
 if __name__ == "__main__":

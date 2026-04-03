@@ -135,6 +135,8 @@ Automated coverage lives under `tests/` and should cover:
 - `glimmer-log --project`
 - `glimmer-log --branch`
 - `glimmer-log --cwd`
+- `glimmer-log --grep`
+- `glimmer-log --cleanup-raw`
 
 Run the automated suite with:
 
