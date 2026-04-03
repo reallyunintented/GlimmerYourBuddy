@@ -132,7 +132,7 @@ cleanup() {
     if [ -f "$TYPESCRIPT" ] && [ ! -s "$TYPESCRIPT" ]; then
         rm -f "$TYPESCRIPT"
     fi
-    echo ""
+    printf '\r\033[2K\n'
     echo "[glimmer-claude] Session ended. Bubbles saved to $GLIMMER_DIR/log.jsonl"
     return "$exit_code"
 }

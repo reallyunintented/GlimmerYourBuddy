@@ -9,6 +9,7 @@ Usage: glimmer-watcher.py <typescript-file> [companion-name] [session-id] [manif
 """
 
 import json
+import os
 import re
 import signal
 import sys
@@ -18,11 +19,15 @@ from pathlib import Path
 
 LOGFILE = Path.home() / ".claude" / "glimmer" / "log.jsonl"
 EVENTSFILE = Path.home() / ".claude" / "glimmer" / "events.jsonl"
+WATCHERLOG = Path.home() / ".claude" / "glimmer" / "watcher.log"
 # How often to scan the buffer (seconds)
 SCAN_INTERVAL = 1.5
+# Require the same bubble text to appear in two scans before logging it.
+STABLE_SCAN_COUNT = 2
 # Minimum box width to consider (Glimmer's box is 34 chars)
 MIN_BOX_WIDTH = 20
 MAX_BOX_WIDTH = 50
+VERBOSE_STDOUT = os.environ.get("GLIMMER_WATCHER_STDOUT") == "1"
 
 # ANSI escape sequence pattern — covers CSI, OSC, and simple escapes
 ANSI_RE = re.compile(
@@ -48,6 +53,15 @@ MID_RE = re.compile(r"│(.+?)│")
 STOP_REQUESTED = False
 BUBBLE_CONTEXT_BEFORE = 4000
 BUBBLE_CONTEXT_AFTER = 1500
+
+
+def debug(message: str) -> None:
+    WATCHERLOG.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(WATCHERLOG, "a", encoding="utf-8") as handle:
+        handle.write(f"[{timestamp}] {message}\n")
+    if VERBOSE_STDOUT:
+        print(message, flush=True)
 
 
 def strip_ansi(text: str) -> str:
@@ -289,34 +303,58 @@ def log_event_entry(entry: dict) -> None:
 def scan_buffer(
     buf: str,
     session_seen: set[str],
+    pending_bubbles: dict[str, dict],
     companion: str,
     session_ctx: dict,
     bubble_seq: int,
+    final_pass: bool = False,
 ) -> int:
     """Extract and persist unseen bubbles from the current buffer."""
     cleaned = strip_ansi(buf)
     bubbles = extract_bubble_candidates(cleaned)
+    current_candidates = set()
     for bubble in bubbles:
         bubble_text = bubble["text"]
-        if bubble_text not in session_seen:
-            session_seen.add(bubble_text)
-            bubble_seq += 1
-            trigger_ctx = classify_trigger(cleaned, bubble)
-            timestamp = datetime.now(timezone.utc).isoformat()
-            legacy_entry = build_legacy_entry(bubble_text, companion, timestamp)
-            event_entry = build_entry(
-                bubble_text,
-                companion,
-                session_ctx,
-                bubble_seq,
-                trigger_ctx,
-                timestamp,
-            )
-            log_legacy_entry(legacy_entry)
-            log_event_entry(event_entry)
-            preview = bubble_text[:60]
-            suffix = "..." if len(bubble_text) > 60 else ""
-            print(f'[glimmer-watcher] Caught: "{preview}{suffix}"')
+        if bubble_text in session_seen:
+            continue
+
+        current_candidates.add(bubble_text)
+        trigger_ctx = classify_trigger(cleaned, bubble)
+        state = pending_bubbles.get(bubble_text)
+        if state is None:
+            pending_bubbles[bubble_text] = {
+                "stable_scans": 1,
+                "trigger_ctx": trigger_ctx,
+            }
+            continue
+
+        state["stable_scans"] += 1
+        state["trigger_ctx"] = trigger_ctx
+        if state["stable_scans"] < STABLE_SCAN_COUNT and not final_pass:
+            continue
+
+        session_seen.add(bubble_text)
+        bubble_seq += 1
+        timestamp = datetime.now(timezone.utc).isoformat()
+        legacy_entry = build_legacy_entry(bubble_text, companion, timestamp)
+        event_entry = build_entry(
+            bubble_text,
+            companion,
+            session_ctx,
+            bubble_seq,
+            state["trigger_ctx"],
+            timestamp,
+        )
+        log_legacy_entry(legacy_entry)
+        log_event_entry(event_entry)
+        pending_bubbles.pop(bubble_text, None)
+        preview = bubble_text[:60]
+        suffix = "..." if len(bubble_text) > 60 else ""
+        debug(f'[glimmer-watcher] Caught: "{preview}{suffix}"')
+
+    for bubble_text in list(pending_bubbles):
+        if bubble_text not in current_candidates:
+            pending_bubbles.pop(bubble_text, None)
     return bubble_seq
 
 
@@ -324,13 +362,14 @@ def tail_and_watch(filepath: str, companion: str, session_ctx: dict):
     """Tail the typescript file and scan for bubbles."""
     # Track what we've already scanned in this session to avoid re-processing
     session_seen, bubble_seq = load_session_state(session_ctx.get("session_id"))
+    pending_bubbles: dict[str, dict] = {}
     file_pos = 0
     buf = ""
 
-    print(f"[glimmer-watcher] Watching for {companion}'s speech bubbles...")
-    print(f"[glimmer-watcher] Logging to {LOGFILE}")
+    debug(f"[glimmer-watcher] Watching for {companion}'s speech bubbles...")
+    debug(f"[glimmer-watcher] Logging to {LOGFILE}")
     if session_ctx.get("session_id"):
-        print(f"[glimmer-watcher] Session: {session_ctx['session_id']}")
+        debug(f"[glimmer-watcher] Session: {session_ctx['session_id']}")
 
     while True:
         try:
@@ -351,6 +390,7 @@ def tail_and_watch(filepath: str, companion: str, session_ctx: dict):
             bubble_seq = scan_buffer(
                 buf,
                 session_seen,
+                pending_bubbles,
                 companion,
                 session_ctx,
                 bubble_seq,
@@ -371,9 +411,11 @@ def tail_and_watch(filepath: str, companion: str, session_ctx: dict):
                 bubble_seq = scan_buffer(
                     buf,
                     session_seen,
+                    pending_bubbles,
                     companion,
                     session_ctx,
                     bubble_seq,
+                    final_pass=True,
                 )
             break
 
@@ -395,13 +437,14 @@ def main():
 
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     EVENTSFILE.parent.mkdir(parents=True, exist_ok=True)
+    WATCHERLOG.parent.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
     try:
         tail_and_watch(filepath, companion, session_ctx)
     except KeyboardInterrupt:
-        print("\n[glimmer-watcher] Stopped.")
+        debug("[glimmer-watcher] Stopped.")
 
 
 if __name__ == "__main__":

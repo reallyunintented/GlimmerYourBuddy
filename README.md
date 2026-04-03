@@ -12,6 +12,7 @@ When you use Claude Code with Glimmer enabled, it:
 - **Watches** your Claude Code terminal in real-time
 - **Detects** speech bubbles from your buddy companion
 - **Logs** them instantly with timestamps
+- **Keeps the terminal clean** by writing watcher debug output to a separate file
 - **Groups** auto-captured bubbles by Claude session
 - **Tags** exact `/buddy pet` reactions and best-effort post-prompt bubbles
 - **Lets you view** them anytime with a simple command
@@ -100,6 +101,7 @@ Session metadata and trigger tagging are stored separately in:
 ```
 ~/.claude/glimmer/events.jsonl
 ~/.claude/glimmer/sessions/
+~/.claude/glimmer/watcher.log
 ```
 
 An event entry looks like:
@@ -124,7 +126,7 @@ An event entry looks like:
 ## 🔧 How It Works
 
 - **`glimmer-claude`** — Wrapper that runs Claude Code and pipes output to the watcher
-- **`glimmer-watcher.py`** — Tails your session in real-time, keeps `log.jsonl` simple, writes session metadata separately
+- **`glimmer-watcher.py`** — Tails your session in real-time, waits for stable bubble text, keeps `log.jsonl` simple, writes session metadata separately
 - **`glimmer-log`** — Reader that displays bubbles across all time or grouped by session
 
 ---
