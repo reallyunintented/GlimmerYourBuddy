@@ -451,6 +451,10 @@ class GlimmerUIApiTests(unittest.TestCase):
 
             mode = stat.S_IMODE(matters_path.stat().st_mode)
             self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
+            self.assertEqual(
+                list(glimmer_dir.glob(".mattered.json.*.tmp")),
+                [],
+            )
 
     def test_bind_host_validation_requires_explicit_remote_opt_in(self):
         self.module.validate_bind_host("127.0.0.1", allow_remote=False)
@@ -459,6 +463,36 @@ class GlimmerUIApiTests(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             self.module.validate_bind_host("0.0.0.0", allow_remote=False)
+
+    def test_origin_matching_requires_same_host_and_port(self):
+        self.assertTrue(
+            self.module.origin_matches_host(
+                "http://127.0.0.1:8767/api/matters",
+                "127.0.0.1:8767",
+                8767,
+            )
+        )
+        self.assertTrue(
+            self.module.origin_matches_host(
+                "http://localhost/api/matters",
+                "localhost",
+                80,
+            )
+        )
+        self.assertFalse(
+            self.module.origin_matches_host(
+                "http://evil.example/api/matters",
+                "127.0.0.1:8767",
+                8767,
+            )
+        )
+        self.assertFalse(
+            self.module.origin_matches_host(
+                "http://127.0.0.1:9999/api/matters",
+                "127.0.0.1:8767",
+                8767,
+            )
+        )
 
 
 if __name__ == "__main__":

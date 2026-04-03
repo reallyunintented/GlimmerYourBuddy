@@ -11,8 +11,10 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 PRIVATE_DIR_MODE = 0o700
@@ -31,13 +33,35 @@ def _ensure_private_parent(path: Path) -> None:
     _set_permissions(path.parent, PRIVATE_DIR_MODE)
 
 
-def _write_private_json(path: Path, payload: dict) -> None:
+def _atomic_write_text(path: Path, content: str) -> None:
     _ensure_private_parent(path)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
     )
-    _set_permissions(path, PRIVATE_FILE_MODE)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _set_permissions(tmp_path, PRIVATE_FILE_MODE)
+        os.replace(tmp_path, path)
+        _set_permissions(path, PRIVATE_FILE_MODE)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    _atomic_write_text(
+        path,
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
 
 
 def _run_git(cwd: str, *args: str) -> str | None:

@@ -11,6 +11,7 @@ import ipaddress
 import json
 import mimetypes
 import os
+import tempfile
 import webbrowser
 from collections import defaultdict
 from datetime import datetime
@@ -99,8 +100,26 @@ def ensure_private_dir(path: Path) -> None:
 
 def write_private_text(path: Path, content: str) -> None:
     ensure_private_dir(path.parent)
-    path.write_text(content, encoding="utf-8")
-    set_permissions(path, PRIVATE_FILE_MODE)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        set_permissions(tmp_path, PRIVATE_FILE_MODE)
+        os.replace(tmp_path, path)
+        set_permissions(path, PRIVATE_FILE_MODE)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def normalize_host_value(value: str | None) -> str:
@@ -143,6 +162,33 @@ def url_host_for_display(host: str) -> str:
     if normalized in {"::", "[::]"}:
         return "localhost"
     return normalized or host
+
+
+def parse_host_port(value: str | None, default_port: int | None = None) -> tuple[str | None, int | None]:
+    if not value:
+        return (None, default_port)
+    parsed = urlparse(f"//{value}")
+    host = parsed.hostname.lower() if parsed.hostname else None
+    port = parsed.port if parsed.port is not None else default_port
+    return (host, port)
+
+
+def origin_matches_host(
+    origin_value: str | None,
+    host_value: str | None,
+    default_port: int,
+) -> bool:
+    if not origin_value:
+        return True
+    parsed = urlparse(origin_value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    host, port = parse_host_port(host_value, default_port)
+    origin_host = parsed.hostname.lower() if parsed.hostname else None
+    origin_port = parsed.port if parsed.port is not None else (
+        443 if parsed.scheme == "https" else 80
+    )
+    return bool(host and origin_host == host and origin_port == port)
 
 
 def parse_timestamp(value: str | None) -> datetime | None:
@@ -833,6 +879,17 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             return True
         return is_loopback_host(host)
 
+    def request_origin_allowed(self) -> bool:
+        host = self.headers.get("Host")
+        if host is None:
+            return True
+        default_port = getattr(self.server, "server_port", 0)
+        for header in ("Origin", "Referer"):
+            value = self.headers.get(header)
+            if value and not origin_matches_host(value, host, default_port):
+                return False
+        return True
+
     def send_security_headers(self) -> None:
         self.send_security_headers()
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -944,6 +1001,9 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         if not self.request_host_allowed():
             self.send_error(403, "Host not allowed")
+            return
+        if not self.request_origin_allowed():
+            self.send_error(403, "Cross-origin POST not allowed")
             return
         parsed = urlparse(self.path)
         if parsed.path not in {"/api/matters", "/api/review-state"}:
