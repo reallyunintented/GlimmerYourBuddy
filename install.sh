@@ -8,9 +8,31 @@ set -euo pipefail
 BIN_DIR="${HOME}/.local/bin"
 SHARE_DIR="${HOME}/.local/share/glimmer"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BASE_URL="${GLIMMER_BASE_URL:-https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/main}"
+REPO_SLUG="${GLIMMER_REPO:-reallyunintented/GlimmerYourBuddy}"
+REF="${GLIMMER_REF:-main}"
+BASE_URL="${GLIMMER_BASE_URL:-https://raw.githubusercontent.com/${REPO_SLUG}/${REF}}"
 SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py glimmer-session.py glimmer-ui)
 ASSETS=(ui/index.html ui/app.js ui/styles.css)
+REMOTE_WARNING_SHOWN=0
+
+warn_mutable_remote_install() {
+    if [ "$REMOTE_WARNING_SHOWN" -eq 1 ]; then
+        return
+    fi
+
+    if [ -n "${GLIMMER_BASE_URL:-}" ] || [ "$REF" != "main" ]; then
+        REMOTE_WARNING_SHOWN=1
+        return
+    fi
+
+    cat >&2 <<'EOF'
+Warning: remote install is using the mutable 'main' branch.
+Prefer a pinned commit for remote installs:
+  GLIMMER_REF=<commit> bash install.sh
+or clone the repo and run ./install.sh locally after inspection.
+EOF
+    REMOTE_WARNING_SHOWN=1
+}
 
 fetch_script() {
     local script="$1"
@@ -38,6 +60,7 @@ install_script() {
     else
         local tmp_file
         tmp_file="$(mktemp)"
+        warn_mutable_remote_install
         fetch_script "$script" > "$tmp_file"
         mv "$tmp_file" "$target"
     fi
@@ -56,6 +79,7 @@ install_asset() {
     else
         local tmp_file
         tmp_file="$(mktemp)"
+        warn_mutable_remote_install
         fetch_script "$asset" > "$tmp_file"
         mv "$tmp_file" "$target"
     fi

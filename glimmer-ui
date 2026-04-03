@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
@@ -80,6 +81,68 @@ RECURRENCE_STOP_WORDS = {
 DEFAULT_GLIMMER_DIR = Path(
     os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer")
 )
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def set_permissions(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except (FileNotFoundError, PermissionError):
+        pass
+
+
+def ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    set_permissions(path, PRIVATE_DIR_MODE)
+
+
+def write_private_text(path: Path, content: str) -> None:
+    ensure_private_dir(path.parent)
+    path.write_text(content, encoding="utf-8")
+    set_permissions(path, PRIVATE_FILE_MODE)
+
+
+def normalize_host_value(value: str | None) -> str:
+    host = (value or "").strip()
+    if host.startswith("["):
+        closing = host.find("]")
+        if closing != -1:
+            return host[1:closing]
+    if host.count(":") == 1:
+        candidate, port = host.rsplit(":", 1)
+        if port.isdigit():
+            return candidate
+    return host
+
+
+def is_loopback_host(value: str | None) -> bool:
+    host = normalize_host_value(value)
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_bind_host(host: str, allow_remote: bool) -> None:
+    if allow_remote or is_loopback_host(host):
+        return
+    raise SystemExit(
+        "Refusing to bind glimmer-ui to a non-loopback host without --allow-remote."
+    )
+
+
+def url_host_for_display(host: str) -> str:
+    normalized = normalize_host_value(host)
+    if normalized == "0.0.0.0":
+        return "127.0.0.1"
+    if normalized in {"::", "[::]"}:
+        return "localhost"
+    return normalized or host
 
 
 def parse_timestamp(value: str | None) -> datetime | None:
@@ -167,9 +230,8 @@ def normalize_matter(value: dict | None) -> dict:
 
 
 def save_matters(path: Path, matters: dict[str, dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(matters, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    path.write_text(payload, encoding="utf-8")
+    write_private_text(path, payload)
 
 
 def bubble_id(entry: dict) -> str:
@@ -763,6 +825,31 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
     def config(self) -> dict:
         return self.server.config  # type: ignore[attr-defined]
 
+    def request_host_allowed(self) -> bool:
+        if self.config.get("allow_remote"):
+            return True
+        host = self.headers.get("Host")
+        if host is None:
+            return True
+        return is_loopback_host(host)
+
+    def send_security_headers(self) -> None:
+        self.send_security_headers()
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "style-src 'self'; "
+            "script-src 'self'; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "base-uri 'none'; "
+            "frame-ancestors 'none'",
+        )
+
     def parse_json_body(self) -> dict | None:
         content_length = self.headers.get("Content-Length")
         if not content_length:
@@ -783,7 +870,7 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(data)
 
@@ -802,6 +889,9 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self.request_host_allowed():
+            self.send_error(403, "Host not allowed")
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
             self.send_json({"ok": True})
@@ -852,6 +942,9 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self.request_host_allowed():
+            self.send_error(403, "Host not allowed")
+            return
         parsed = urlparse(self.path)
         if parsed.path not in {"/api/matters", "/api/review-state"}:
             self.send_error(404)
@@ -920,11 +1013,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument("--glimmer-dir", default=str(DEFAULT_GLIMMER_DIR))
     parser.add_argument("--no-open", action="store_true")
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow binding to non-loopback hosts. Use only behind your own auth boundary.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    validate_bind_host(args.host, args.allow_remote)
     glimmer_dir = Path(args.glimmer_dir).expanduser()
     ui_dir = resolve_ui_dir(Path(__file__))
     if not ui_dir.exists():
@@ -934,10 +1033,13 @@ def main() -> int:
     server.config = {  # type: ignore[attr-defined]
         "glimmer_dir": glimmer_dir,
         "ui_dir": ui_dir,
+        "allow_remote": args.allow_remote,
     }
-    url = f"http://{args.host}:{server.server_port}/"
+    url = f"http://{url_host_for_display(args.host)}:{server.server_port}/"
     print(f"Glimmer UI running at {url}")
     print(f"Reading data from {glimmer_dir}")
+    if args.allow_remote:
+        print("Remote access is enabled. Add your own network boundary and auth.")
     if not args.no_open:
         try:
             webbrowser.open(url)

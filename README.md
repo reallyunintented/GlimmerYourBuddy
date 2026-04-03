@@ -27,21 +27,26 @@ It is a local-first significance layer for things your Claude buddy said that ac
 
 ## 🚀 Install
 
-### Quick Start (One Command)
-```bash
-curl -sSL https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/main/install.sh | bash
-```
-
-The installer downloads the Glimmer launchers into `~/.local/bin` and installs the local UI assets into `~/.local/share/glimmer/`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-### Manual Install
+### Recommended Install
 ```bash
 git clone https://github.com/reallyunintented/GlimmerYourBuddy.git
 cd GlimmerYourBuddy
 ./install.sh
+```
+
+This keeps the install reviewable before anything lands in `~/.local/bin`.
+
+### Fast Install (Pinned Commit)
+```bash
+export GLIMMER_REF=abbedf7faec3d07d024ad30b3aa5577ddb9a3535
+curl -sSL "https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/${GLIMMER_REF}/install.sh" | bash
+```
+
+If you use the remote installer, pin the commit. Pulling installer files from a mutable branch is convenient, but it is also a supply-chain footgun.
+
+The installer downloads the Glimmer launchers into `~/.local/bin` and installs the local UI assets into `~/.local/share/glimmer/`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ---
@@ -90,6 +95,10 @@ glimmer-ui
 glimmer-log --mattered
 glimmer-log --review
 
+# Build a project brief for the current work
+glimmer-log --brief
+glimmer-log --brief --markdown
+
 # Mark the latest bubble and add a note
 glimmer-log --mark latest --note "This changed the direction."
 
@@ -110,12 +119,17 @@ glimmer-ui
 
 That opens a small local app for browsing recent bubbles, mattered bubbles, the review queue, projects, sessions, and search. You can mark a bubble as mattered, add a note, change its review state, and inspect related mattered bubbles plus recurrence hints. It reads and writes only your local Glimmer files and does not upload anything.
 
+The UI also has a `Brief` view: a compact "before you begin" panel that pulls the top mattered bubbles, open items, and recurring signals for a project, with copy buttons for plain text or markdown agent context.
+
+`glimmer-ui` binds to `127.0.0.1` by default. Keep it on loopback unless you intentionally proxy or expose it yourself.
+
 ### Use the Local API
 When `glimmer-ui` is running, it also exposes a small localhost JSON API:
 
 ```bash
 curl -s http://127.0.0.1:8767/api/review
 curl -s http://127.0.0.1:8767/api/mattered
+curl -s "http://127.0.0.1:8767/api/brief?project=GlimmerYourBuddy"
 curl -s http://127.0.0.1:8767/api/bubbles/<bubble-id>
 ```
 
@@ -123,12 +137,30 @@ Current routes:
 - `GET /api/index`
 - `GET /api/mattered`
 - `GET /api/review`
+- `GET /api/brief?project=...`
 - `GET /api/search?q=...`
 - `GET /api/bubbles/:id`
 - `POST /api/matters`
 - `POST /api/review-state`
 
 This API is local-only and meant to support the UI first. It is also the foundation for future agent integrations.
+
+### Start With a Brief
+If you want a small project-specific memory snapshot before a session starts, you now have three paths:
+
+```bash
+# In the terminal
+glimmer-log --brief
+glimmer-log --brief --markdown
+
+# In the local app
+glimmer-ui
+
+# Right before Claude starts
+glimmer-claude --glimmer-brief
+```
+
+The brief pulls from the same local mattered/review/recurrence data as the UI and API. It is meant to answer one question quickly: what should I remember before I continue here?
 
 ### Watcher Debug Output
 By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.
@@ -137,6 +169,14 @@ If you want to see watcher debug lines live anyway, run:
 ```bash
 GLIMMER_WATCHER_STDOUT=1 glimmer-claude
 ```
+
+### Raw Transcript Retention
+Raw terminal capture is sensitive. If you want Glimmer to delete the raw `script` transcript as soon as the watcher is finished with it, run:
+```bash
+GLIMMER_KEEP_RAW=0 glimmer-claude
+```
+
+Structured bubble data still stays in the normal Glimmer archive.
 
 ### Manually Add a Bubble
 Heard something great and want to log it manually?
@@ -151,6 +191,8 @@ Manual adds use your configured Claude companion name when available.
 ## 💾 Where It's Stored
 
 Glimmer writes a few local files on purpose. They have different jobs.
+
+Newer Glimmer builds tighten permissions on archive files and directories so they stay user-only by default where possible.
 
 ### `~/.claude/glimmer/log.jsonl`
 This is the compatibility log. It is the main "plain bubble history" file.
@@ -237,7 +279,7 @@ Each entry is keyed by Glimmer's bubble id:
 }
 ```
 
-This file is used by `glimmer-ui` and `glimmer-log` to show mattered counts, the review queue, recurrence cues, and any notes you attached to a bubble.
+This file is used by `glimmer-ui` and `glimmer-log` to show mattered counts, the review queue, recurrence cues, project briefs, and any notes you attached to a bubble.
 
 ### Summary
 All bubbles are still saved locally. The split is:
@@ -259,8 +301,8 @@ mattered.json  explicit mattered marks and notes
 ### The Short Version
 - **`glimmer-claude`** starts Claude inside `script`, creates a session id, writes a session manifest, and launches the watcher.
 - **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, and writes logs.
-- **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for.
-- **`glimmer-ui`** serves the local archive app, merges mattered marks and review state, builds recurrence and resurface cues, and exposes the visual browser plus local JSON API over localhost.
+- **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for, and can build a project brief in plain text, JSON, or markdown.
+- **`glimmer-ui`** serves the local archive app, merges mattered marks and review state, builds recurrence, resurface, and brief cues, and exposes the visual browser plus local JSON API over localhost.
 
 Session context is separate from trigger attribution:
 
@@ -291,6 +333,15 @@ Starting Claude Code with Glimmer logging...
   Companion: Glimmer
   Session:   20260403-142215-12345
   Log file:  ~/.claude/glimmer/log.jsonl
+```
+
+### Start Claude with a project brief first
+```bash
+$ glimmer-claude --glimmer-brief
+[glimmer-claude] Brief for this project
+Brief: GlimmerYourBuddy
+Scope: cwd  cwd=/home/notprinted/glimmer
+Mattered: 4  Open: 2  Unreviewed: 1  Used: 1  Stale: 0
 ```
 
 ### Later, relive the memories

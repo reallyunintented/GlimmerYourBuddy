@@ -15,6 +15,30 @@ import subprocess
 import sys
 from pathlib import Path
 
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def _set_permissions(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except (FileNotFoundError, PermissionError):
+        pass
+
+
+def _ensure_private_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _set_permissions(path.parent, PRIVATE_DIR_MODE)
+
+
+def _write_private_json(path: Path, payload: dict) -> None:
+    _ensure_private_parent(path)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _set_permissions(path, PRIVATE_FILE_MODE)
+
 
 def _run_git(cwd: str, *args: str) -> str | None:
     try:
@@ -66,11 +90,7 @@ def write_manifest(
         "argv": ["claude", *claude_args],
         **detect_repo_context(cwd),
     }
-    path = Path(manifest_path)
-    path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_private_json(Path(manifest_path), manifest)
 
 
 def finalize_manifest(manifest_path: str, session_id: str, ended_at: str) -> None:
@@ -84,10 +104,7 @@ def finalize_manifest(manifest_path: str, session_id: str, ended_at: str) -> Non
 
     manifest["session_id"] = manifest.get("session_id", session_id)
     manifest["ended_at"] = ended_at
-    path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _write_private_json(path, manifest)
 
 
 def main() -> int:

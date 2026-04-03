@@ -1,4 +1,5 @@
 import importlib.util
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -96,6 +97,23 @@ class DetectRepoContextTests(unittest.TestCase):
             self.assertEqual(context["project_root"], str(repo))
             self.assertEqual(context["git_branch"], "HEAD")
             self.assertTrue(context["is_repo_root"])
+
+    def test_manifest_writes_private_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sessions" / "sess-1.json"
+
+            self.module.write_manifest(
+                str(manifest_path),
+                "sess-1",
+                "2026-04-04T00:00:00+00:00",
+                "Glimmer",
+                "/tmp/session.raw",
+                tmp,
+                ["--model", "test"],
+            )
+
+            mode = stat.S_IMODE(manifest_path.stat().st_mode)
+            self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
 
 
 if __name__ == "__main__":

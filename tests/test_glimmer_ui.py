@@ -1,6 +1,7 @@
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -429,6 +430,35 @@ class GlimmerUIApiTests(unittest.TestCase):
     def test_update_review_state_requires_existing_matter(self):
         with self.assertRaises(KeyError):
             self.module.update_review_state({}, "missing", "used")
+
+    def test_save_matters_writes_private_file_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            matters_path = glimmer_dir / "mattered.json"
+
+            self.module.save_matters(
+                matters_path,
+                {
+                    "bubble-1": {
+                        "note": "Keep this.",
+                        "marked_at": "2026-04-03T11:00:00+00:00",
+                        "updated_at": "2026-04-03T11:00:00+00:00",
+                        "review_state": "open",
+                        "reviewed_at": "2026-04-03T11:00:00+00:00",
+                    }
+                },
+            )
+
+            mode = stat.S_IMODE(matters_path.stat().st_mode)
+            self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
+
+    def test_bind_host_validation_requires_explicit_remote_opt_in(self):
+        self.module.validate_bind_host("127.0.0.1", allow_remote=False)
+        self.module.validate_bind_host("localhost", allow_remote=False)
+        self.module.validate_bind_host("0.0.0.0", allow_remote=True)
+
+        with self.assertRaises(SystemExit):
+            self.module.validate_bind_host("0.0.0.0", allow_remote=False)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ from pathlib import Path
 LOGFILE = Path.home() / ".claude" / "glimmer" / "log.jsonl"
 EVENTSFILE = Path.home() / ".claude" / "glimmer" / "events.jsonl"
 WATCHERLOG = Path.home() / ".claude" / "glimmer" / "watcher.log"
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 # How often to scan the buffer (seconds)
 SCAN_INTERVAL = 1.5
 # Require the same bubble text to appear in two scans before logging it.
@@ -67,11 +69,24 @@ SESSION_CONTEXT_KEYS = (
 )
 
 
+def set_permissions(path: Path, mode: int) -> None:
+    try:
+        path.chmod(mode)
+    except (FileNotFoundError, PermissionError):
+        pass
+
+
+def ensure_private_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    set_permissions(path.parent, PRIVATE_DIR_MODE)
+
+
 def debug(message: str) -> None:
-    WATCHERLOG.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_parent(WATCHERLOG)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(WATCHERLOG, "a", encoding="utf-8") as handle:
         handle.write(f"[{timestamp}] {message}\n")
+    set_permissions(WATCHERLOG, PRIVATE_FILE_MODE)
     if VERBOSE_STDOUT:
         print(message, flush=True)
 
@@ -326,14 +341,17 @@ def build_legacy_entry(text: str, companion: str, timestamp: str) -> dict:
 
 
 def log_legacy_entry(entry: dict) -> None:
+    ensure_private_parent(LOGFILE)
     with open(LOGFILE, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    set_permissions(LOGFILE, PRIVATE_FILE_MODE)
 
 
 def log_event_entry(entry: dict) -> None:
-    EVENTSFILE.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_parent(EVENTSFILE)
     with open(EVENTSFILE, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    set_permissions(EVENTSFILE, PRIVATE_FILE_MODE)
 
 
 def scan_buffer(

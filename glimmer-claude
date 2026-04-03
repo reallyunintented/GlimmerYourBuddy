@@ -7,9 +7,11 @@
 # ~/.claude/glimmer/log.jsonl
 #
 # Usage: glimmer-claude [any claude args...]
+#        glimmer-claude --glimmer-brief [any claude args...]
 #
 
 set -euo pipefail
+umask 077
 
 GLIMMER_DIR="$HOME/.claude/glimmer"
 RAW_DIR="$GLIMMER_DIR/raw"
@@ -17,6 +19,8 @@ SESSIONS_DIR="$GLIMMER_DIR/sessions"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER="${GLIMMER_WATCHER:-}"
 SESSION_HELPER="${GLIMMER_SESSION_HELPER:-}"
+KEEP_RAW_CAPTURE="${GLIMMER_KEEP_RAW:-1}"
+LOG_HELPER="${GLIMMER_LOG_HELPER:-}"
 
 if [ -z "$WATCHER" ]; then
     if command -v glimmer-watcher.py >/dev/null 2>&1; then
@@ -37,6 +41,44 @@ if [ -z "$SESSION_HELPER" ]; then
         SESSION_HELPER="$HOME/.local/bin/glimmer-session.py"
     fi
 fi
+
+if [ -z "$LOG_HELPER" ]; then
+    if command -v glimmer-log >/dev/null 2>&1; then
+        LOG_HELPER="$(command -v glimmer-log)"
+    elif [ -x "$SCRIPT_DIR/glimmer-log" ]; then
+        LOG_HELPER="$SCRIPT_DIR/glimmer-log"
+    else
+        LOG_HELPER="$HOME/.local/bin/glimmer-log"
+    fi
+fi
+
+BRIEF_ON_START="${GLIMMER_BRIEF_ON_START:-0}"
+BRIEF_FORMAT="${GLIMMER_BRIEF_FORMAT:-plain}"
+CLAUDE_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --glimmer-brief)
+            BRIEF_ON_START=1
+            shift
+            ;;
+        --glimmer-brief-markdown)
+            BRIEF_ON_START=1
+            BRIEF_FORMAT="markdown"
+            shift
+            ;;
+        --)
+            shift
+            while [ $# -gt 0 ]; do
+                CLAUDE_ARGS+=("$1")
+                shift
+            done
+            ;;
+        *)
+            CLAUDE_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
 
 if ! command -v claude >/dev/null 2>&1; then
     echo "Error: 'claude' is not in PATH." >&2
@@ -60,7 +102,8 @@ if [ ! -x "$SESSION_HELPER" ]; then
     exit 1
 fi
 
-mkdir -p "$RAW_DIR" "$SESSIONS_DIR"
+mkdir -p "$GLIMMER_DIR" "$RAW_DIR" "$SESSIONS_DIR"
+chmod 700 "$GLIMMER_DIR" "$RAW_DIR" "$SESSIONS_DIR" 2>/dev/null || true
 
 # Get companion name from config
 COMPANION_NAME=$(python3 -c "
@@ -78,10 +121,27 @@ MANIFEST_PATH="$SESSIONS_DIR/${SESSION_ID}.json"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 PWD_VALUE="${PWD:-$(pwd)}"
 WATCHER_PID=""
-CLAUDE_ARGS=( "$@" )
 
 write_session_manifest() {
     python3 "$SESSION_HELPER" manifest "$MANIFEST_PATH" "$SESSION_ID" "$STARTED_AT" "$COMPANION_NAME" "$TYPESCRIPT" "$PWD_VALUE" "${CLAUDE_ARGS[@]}"
+}
+
+show_start_brief() {
+    if [ "$BRIEF_ON_START" != "1" ]; then
+        return
+    fi
+    if [ ! -x "$LOG_HELPER" ]; then
+        echo "[glimmer-claude] Brief requested, but glimmer-log was not found." >&2
+        return
+    fi
+
+    echo "[glimmer-claude] Brief for this project"
+    if [ "$BRIEF_FORMAT" = "markdown" ]; then
+        "$LOG_HELPER" --brief --cwd "$PWD_VALUE" --markdown || true
+    else
+        "$LOG_HELPER" --brief --cwd "$PWD_VALUE" --plain || true
+    fi
+    echo ""
 }
 
 finalize_session_manifest() {
@@ -103,8 +163,10 @@ cleanup() {
         kill -TERM "$WATCHER_PID" 2>/dev/null || true
         wait "$WATCHER_PID" 2>/dev/null || true
     fi
-    # Clean up empty raw files
-    if [ -f "$TYPESCRIPT" ] && [ ! -s "$TYPESCRIPT" ]; then
+    # Keep raw transcripts only when explicitly requested.
+    if [ "$KEEP_RAW_CAPTURE" = "0" ] && [ -f "$TYPESCRIPT" ]; then
+        rm -f "$TYPESCRIPT"
+    elif [ -f "$TYPESCRIPT" ] && [ ! -s "$TYPESCRIPT" ]; then
         rm -f "$TYPESCRIPT"
     fi
     printf '\r\033[2K\n'
@@ -115,6 +177,7 @@ trap cleanup EXIT
 
 # Create the raw file so the watcher can start tailing immediately
 touch "$TYPESCRIPT"
+chmod 600 "$TYPESCRIPT" 2>/dev/null || true
 write_session_manifest
 
 echo "Starting Claude Code with Glimmer logging..."
@@ -122,6 +185,8 @@ echo "  Companion: $COMPANION_NAME"
 echo "  Session:   $SESSION_ID"
 echo "  Log file:  $GLIMMER_DIR/log.jsonl"
 echo ""
+
+show_start_brief
 
 # Start the watcher in background
 python3 "$WATCHER" "$TYPESCRIPT" "$COMPANION_NAME" "$SESSION_ID" "$MANIFEST_PATH" &
