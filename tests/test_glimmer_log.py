@@ -4,11 +4,22 @@ import subprocess
 import tempfile
 import time
 import unittest
+import importlib.util
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GLIMMER_LOG = REPO_ROOT / "glimmer-log"
+GLIMMER_UI = REPO_ROOT / "glimmer-ui"
+
+
+def load_glimmer_ui_module():
+    loader = SourceFileLoader("glimmer_ui_for_log_tests", str(GLIMMER_UI))
+    spec = importlib.util.spec_from_loader("glimmer_ui_for_log_tests", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -272,6 +283,129 @@ class GlimmerLogLegacyCommandTests(unittest.TestCase):
         self.assertIn("Removed 1 raw capture file(s) older than 14 days.", output)
         self.assertFalse(old_raw.exists())
         self.assertTrue(fresh_raw.exists())
+
+
+class GlimmerLogMatterCommandTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.glimmer_ui = load_glimmer_ui_module()
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.home = Path(self.tempdir.name)
+        self.glimmer_dir = self.home / ".claude" / "glimmer"
+        self.sessions_dir = self.glimmer_dir / "sessions"
+        self.sessions_dir.mkdir(parents=True)
+        self.eventsfile = self.glimmer_dir / "events.jsonl"
+        self.logfile = self.glimmer_dir / "log.jsonl"
+        self._write_fixtures()
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _write_fixtures(self):
+        events = [
+            {
+                "timestamp": "2026-04-03T10:01:00+00:00",
+                "companion": "Glimmer",
+                "text": "Older bubble",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            },
+            {
+                "timestamp": "2026-04-03T10:02:00+00:00",
+                "companion": "Glimmer",
+                "text": "Latest mattered candidate",
+                "source": "auto",
+                "bubble_seq": 2,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "post_prompt",
+                "trigger_confidence": "heuristic",
+            },
+        ]
+        write_jsonl(self.eventsfile, events)
+        write_jsonl(self.logfile, [])
+        (self.sessions_dir / "sess-1.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "sess-1",
+                    "started_at": "2026-04-03T10:00:00+00:00",
+                    "ended_at": "2026-04-03T10:05:00+00:00",
+                    "companion": "Glimmer",
+                    "cwd": "/work/alpha",
+                    "project_root": "/work/alpha",
+                    "project_name": "alpha",
+                    "git_branch": "main",
+                    "is_repo_root": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.latest_bubble_id = self.glimmer_ui.bubble_id(events[-1])
+
+    def run_glimmer_log(self, *args: str) -> str:
+        env = os.environ.copy()
+        env["HOME"] = str(self.home)
+        completed = subprocess.run(
+            ["bash", str(GLIMMER_LOG), *args],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout
+
+    def test_mark_latest_creates_mattered_entry(self):
+        self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
+
+        matters = json.loads(
+            (self.glimmer_dir / "mattered.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(self.latest_bubble_id, matters)
+        self.assertEqual(matters[self.latest_bubble_id]["note"], "Keep this one.")
+        self.assertEqual(matters[self.latest_bubble_id]["review_state"], "unreviewed")
+
+    def test_mattered_json_lists_marked_bubbles(self):
+        self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
+
+        output = self.run_glimmer_log("--mattered", "--json")
+        payload = json.loads(output)
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["bubbles"][0]["id"], self.latest_bubble_id)
+        self.assertEqual(payload["bubbles"][0]["matter_note"], "Keep this one.")
+
+    def test_review_state_updates_and_review_filter_outputs_group(self):
+        self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
+        self.run_glimmer_log("--review-state", "latest", "used")
+
+        matters = json.loads(
+            (self.glimmer_dir / "mattered.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(matters[self.latest_bubble_id]["review_state"], "used")
+        self.assertIsNotNone(matters[self.latest_bubble_id]["reviewed_at"])
+
+        output = self.run_glimmer_log("--review", "used", "--json")
+        payload = json.loads(output)
+        self.assertEqual(len(payload["groups"]["used"]), 1)
+        self.assertEqual(payload["groups"]["used"][0]["id"], self.latest_bubble_id)
 
 
 if __name__ == "__main__":

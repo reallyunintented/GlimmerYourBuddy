@@ -21,7 +21,24 @@ LOGFILE="$HOME/.claude/glimmer/log.jsonl"
 EVENTSFILE="$HOME/.claude/glimmer/events.jsonl"
 SESSIONS_DIR="$HOME/.claude/glimmer/sessions"
 RAW_DIR="$HOME/.claude/glimmer/raw"
+GLIMMER_DIR="$HOME/.claude/glimmer"
 CLEANUP_RAW_DAYS_DEFAULT=14
+
+resolve_glimmer_ui_script() {
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/glimmer-ui" ]; then
+        echo "$here/glimmer-ui"
+        return 0
+    fi
+    if [ -f "$HOME/.local/bin/glimmer-ui" ]; then
+        echo "$HOME/.local/bin/glimmer-ui"
+        return 0
+    fi
+    echo ""
+}
+
+GLIMMER_UI_SCRIPT="$(resolve_glimmer_ui_script)"
 
 get_companion_name() {
     python3 -c "
@@ -389,6 +406,260 @@ print(f"Removed {removed} raw capture file(s) older than {max_age_days} {day_lab
 PY
 }
 
+require_glimmer_ui_script() {
+    if [ -z "$GLIMMER_UI_SCRIPT" ] || [ ! -f "$GLIMMER_UI_SCRIPT" ]; then
+        echo "glimmer-ui is required for this command but was not found." >&2
+        exit 1
+    fi
+}
+
+view_mattered() {
+    local output_mode="${1:-pretty}"
+    require_glimmer_ui_script
+    python3 - "$GLIMMER_UI_SCRIPT" "$GLIMMER_DIR" "$output_mode" <<'PY'
+import importlib.util
+import json
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+def load_module(path: str):
+    loader = SourceFileLoader("glimmer_ui", path)
+    spec = importlib.util.spec_from_loader("glimmer_ui", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def format_ts(module, value: str | None) -> str:
+    parsed = module.parse_timestamp(value)
+    if parsed is None:
+        return value or "-"
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+module = load_module(sys.argv[1])
+glimmer_dir = Path(sys.argv[2]).expanduser()
+output_mode = sys.argv[3]
+payload = module.build_mattered_view(module.build_index(glimmer_dir))
+
+if output_mode == "json":
+    print(json.dumps(payload, ensure_ascii=False))
+    sys.exit(0)
+
+if not payload["bubbles"]:
+    print("No mattered bubbles yet.")
+    sys.exit(0)
+
+print(f'Mattered bubbles: {payload["count"]}')
+print(
+    f'Unreviewed: {payload["counts"]["unreviewed"]}  '
+    f'Open: {payload["counts"]["open"]}  '
+    f'Used: {payload["counts"]["used"]}  '
+    f'Stale: {payload["counts"]["stale"]}'
+)
+print()
+
+for bubble in payload["bubbles"]:
+    project = bubble.get("project_name") or "-"
+    state = bubble.get("review_state") or module.DEFAULT_REVIEW_STATE
+    print(
+        f'{bubble["id"]}  {format_ts(module, bubble.get("mattered_at") or bubble.get("timestamp"))}  '
+        f'project={project}  state={state}'
+    )
+    print(f'  "{bubble.get("text", "")}"')
+    if bubble.get("matter_note"):
+        print(f'  note: {bubble["matter_note"]}')
+    print()
+PY
+}
+
+view_review() {
+    local output_mode="${1:-pretty}"
+    local review_filter="${2:-}"
+    require_glimmer_ui_script
+    python3 - "$GLIMMER_UI_SCRIPT" "$GLIMMER_DIR" "$output_mode" "$review_filter" <<'PY'
+import importlib.util
+import json
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+def load_module(path: str):
+    loader = SourceFileLoader("glimmer_ui", path)
+    spec = importlib.util.spec_from_loader("glimmer_ui", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def format_ts(module, value: str | None) -> str:
+    parsed = module.parse_timestamp(value)
+    if parsed is None:
+        return value or "-"
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+module = load_module(sys.argv[1])
+glimmer_dir = Path(sys.argv[2]).expanduser()
+output_mode = sys.argv[3]
+review_filter = sys.argv[4]
+payload = module.build_review_view(module.build_index(glimmer_dir))
+
+if review_filter:
+    if review_filter not in module.REVIEW_STATES:
+        print(
+            f"Invalid review state: {review_filter}. "
+            f"Expected one of: {', '.join(module.REVIEW_STATES)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    payload = {
+        "generated_at": payload["generated_at"],
+        "counts": payload["counts"],
+        "groups": {review_filter: payload["groups"][review_filter]},
+    }
+
+if output_mode == "json":
+    print(json.dumps(payload, ensure_ascii=False))
+    sys.exit(0)
+
+if payload["counts"]["mattered"] == 0:
+    print("No mattered bubbles to review yet.")
+    sys.exit(0)
+
+for review_state, bubbles in payload["groups"].items():
+    print(f'{review_state} ({len(bubbles)})')
+    if not bubbles:
+        print("  none")
+        print()
+        continue
+    for bubble in bubbles:
+        project = bubble.get("project_name") or "-"
+        reviewed_at = format_ts(module, bubble.get("reviewed_at"))
+        print(f'  {bubble["id"]}  project={project}  reviewed={reviewed_at}')
+        print(f'    "{bubble.get("text", "")}"')
+        if bubble.get("matter_note"):
+            print(f'    note: {bubble["matter_note"]}')
+    print()
+PY
+}
+
+mark_bubble() {
+    local bubble_ref="$1"
+    local marked="$2"
+    local note="${3:-}"
+    require_glimmer_ui_script
+    python3 - "$GLIMMER_UI_SCRIPT" "$GLIMMER_DIR" "$bubble_ref" "$marked" "$note" <<'PY'
+import importlib.util
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+def load_module(path: str):
+    loader = SourceFileLoader("glimmer_ui", path)
+    spec = importlib.util.spec_from_loader("glimmer_ui", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+module = load_module(sys.argv[1])
+glimmer_dir = Path(sys.argv[2]).expanduser()
+bubble_ref = sys.argv[3]
+marked = sys.argv[4] == "1"
+note = sys.argv[5]
+index = module.build_index(glimmer_dir)
+
+if not index["bubbles"]:
+    print("No bubbles available.", file=sys.stderr)
+    sys.exit(1)
+
+if bubble_ref == "latest":
+    bubble = index["bubbles"][0]
+else:
+    bubble = next((item for item in index["bubbles"] if item.get("id") == bubble_ref), None)
+
+if bubble is None:
+    print(f"Bubble not found: {bubble_ref}", file=sys.stderr)
+    sys.exit(1)
+
+matters_path = glimmer_dir / module.MATTERS_FILE
+matters = module.load_matters(matters_path)
+matter = module.upsert_matter(
+    matters,
+    bubble["id"],
+    marked=marked,
+    note=note,
+)
+module.save_matters(matters_path, matters)
+
+if marked:
+    print(f'Marked {bubble["id"]}.')
+    if matter and matter.get("note"):
+        print(f'Note: {matter["note"]}')
+else:
+    print(f'Unmarked {bubble["id"]}.')
+PY
+}
+
+set_review_state() {
+    local bubble_ref="$1"
+    local review_state="$2"
+    require_glimmer_ui_script
+    python3 - "$GLIMMER_UI_SCRIPT" "$GLIMMER_DIR" "$bubble_ref" "$review_state" <<'PY'
+import importlib.util
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+def load_module(path: str):
+    loader = SourceFileLoader("glimmer_ui", path)
+    spec = importlib.util.spec_from_loader("glimmer_ui", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+module = load_module(sys.argv[1])
+glimmer_dir = Path(sys.argv[2]).expanduser()
+bubble_ref = sys.argv[3]
+review_state = sys.argv[4]
+index = module.build_index(glimmer_dir)
+
+if not index["bubbles"]:
+    print("No bubbles available.", file=sys.stderr)
+    sys.exit(1)
+
+if bubble_ref == "latest":
+    bubble = index["bubbles"][0]
+else:
+    bubble = next((item for item in index["bubbles"] if item.get("id") == bubble_ref), None)
+
+if bubble is None:
+    print(f"Bubble not found: {bubble_ref}", file=sys.stderr)
+    sys.exit(1)
+
+matters_path = glimmer_dir / module.MATTERS_FILE
+matters = module.load_matters(matters_path)
+try:
+    matter = module.update_review_state(matters, bubble["id"], review_state)
+except KeyError:
+    print("Bubble must be marked as mattered first.", file=sys.stderr)
+    sys.exit(1)
+except ValueError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(1)
+
+module.save_matters(matters_path, matters)
+print(f'Set {bubble["id"]} to {matter["review_state"]}.')
+PY
+}
+
 show_help() {
     echo "Usage: glimmer-log [OPTIONS]"
     echo ""
@@ -402,6 +673,13 @@ show_help() {
     echo "  --branch NAME     Filter session views by exact git branch"
     echo "  --cwd PATH        Filter session views by exact cwd"
     echo "  --repo-root-only  Filter session views to repo-root sessions"
+    echo "  --mattered        Show bubbles marked as mattered"
+    echo "  --review [STATE]  Show mattered bubbles grouped by review state"
+    echo "  --mark ID         Mark a bubble as mattered (or use latest)"
+    echo "  --unmark ID       Remove mattered mark from a bubble"
+    echo "  --note TEXT       Optional note for --mark"
+    echo "  --review-state ID STATE"
+    echo "                    Set review state: unreviewed, open, used, stale"
     echo "  --cleanup-raw     Remove raw capture files older than 14 days"
     echo "  --cleanup-raw N   Remove raw capture files older than N days"
     echo "  --add \"text\"      Manually add a bubble"
@@ -410,7 +688,9 @@ show_help() {
     echo "  -h, --help        Show this help"
 }
 
-MODE="pretty"
+MODE="legacy"
+LEGACY_MODE="pretty"
+OUTPUT_MODE="pretty"
 LIMIT=0
 SESSION_REF=""
 PROJECT_FILTER=""
@@ -418,6 +698,12 @@ BRANCH_FILTER=""
 CWD_FILTER=""
 REPO_ROOT_ONLY=0
 GREP_TEXT=""
+REVIEW_FILTER=""
+MARK_REF=""
+UNMARK_REF=""
+NOTE_TEXT=""
+REVIEW_STATE_REF=""
+REVIEW_STATE_VALUE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -430,11 +716,15 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --json)
-            MODE="json"
+            OUTPUT_MODE="json"
+            if [ "$MODE" = "legacy" ]; then
+                LEGACY_MODE="json"
+            fi
             shift
             ;;
         --stats)
-            MODE="stats"
+            MODE="legacy"
+            LEGACY_MODE="stats"
             shift
             ;;
         --sessions)
@@ -477,6 +767,52 @@ while [ $# -gt 0 ]; do
             REPO_ROOT_ONLY=1
             shift
             ;;
+        --mattered)
+            MODE="mattered"
+            shift
+            ;;
+        --review)
+            MODE="review"
+            if [ $# -ge 2 ] && [[ ! "${2:-}" =~ ^- ]]; then
+                REVIEW_FILTER="$2"
+                shift 2
+            else
+                shift
+            fi
+            ;;
+        --mark)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --mark <id|latest>" >&2
+                exit 1
+            fi
+            MARK_REF="$2"
+            shift 2
+            ;;
+        --unmark)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --unmark <id|latest>" >&2
+                exit 1
+            fi
+            UNMARK_REF="$2"
+            shift 2
+            ;;
+        --note)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --note <text>" >&2
+                exit 1
+            fi
+            NOTE_TEXT="$2"
+            shift 2
+            ;;
+        --review-state)
+            if [ $# -lt 3 ] || [ -z "${2:-}" ] || [ -z "${3:-}" ]; then
+                echo "Usage: glimmer-log --review-state <id|latest> <state>" >&2
+                exit 1
+            fi
+            REVIEW_STATE_REF="$2"
+            REVIEW_STATE_VALUE="$3"
+            shift 3
+            ;;
         -n)
             if ! [[ "${2:-}" =~ ^[0-9]+$ ]]; then
                 echo "Error: -n expects a non-negative integer." >&2
@@ -515,7 +851,34 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$PROJECT_FILTER" ] || [ -n "$BRANCH_FILTER" ] || [ -n "$CWD_FILTER" ] || [ "$REPO_ROOT_ONLY" -eq 1 ]; then
-    MODE="sessions"
+    if [ "$MODE" = "legacy" ]; then
+        MODE="sessions"
+    fi
+fi
+
+if [ -n "$MARK_REF" ]; then
+    mark_bubble "$MARK_REF" "1" "$NOTE_TEXT"
+    exit 0
+fi
+
+if [ -n "$UNMARK_REF" ]; then
+    mark_bubble "$UNMARK_REF" "0" ""
+    exit 0
+fi
+
+if [ -n "$REVIEW_STATE_REF" ]; then
+    set_review_state "$REVIEW_STATE_REF" "$REVIEW_STATE_VALUE"
+    exit 0
+fi
+
+if [ "$MODE" = "mattered" ]; then
+    view_mattered "$OUTPUT_MODE"
+    exit 0
+fi
+
+if [ "$MODE" = "review" ]; then
+    view_review "$OUTPUT_MODE" "$REVIEW_FILTER"
+    exit 0
 fi
 
 if [ -n "$SESSION_REF" ] || [ "$MODE" = "sessions" ]; then
@@ -524,4 +887,4 @@ if [ -n "$SESSION_REF" ] || [ "$MODE" = "sessions" ]; then
 fi
 
 require_logfile
-view_legacy "$MODE" "$LIMIT" "$GREP_TEXT"
+view_legacy "$LEGACY_MODE" "$LIMIT" "$GREP_TEXT"
