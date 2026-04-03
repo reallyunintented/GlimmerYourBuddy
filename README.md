@@ -1,8 +1,8 @@
-# ✨ Glimmer — Your Buddy's Wisdom, Forever
+# ✨ Glimmer — Local Archive for Claude Buddy Bubbles
 
-Ever loved something your Claude Code buddy said, but the comment disappeared after 10 seconds? **Glimmer** captures those precious speech bubbles so you can keep them forever.
+Glimmer captures Claude Code buddy speech bubbles and keeps them in a local, searchable archive with session context.
 
-No screenshots. No copying. Just memories.
+No screenshots. No copying. Just a usable history.
 
 ---
 
@@ -16,9 +16,10 @@ When you use Claude Code with Glimmer enabled, it:
 - **Groups** auto-captured bubbles by Claude session
 - **Stores exact session context** like cwd, project name, repo root, and branch
 - **Tags** exact `/buddy pet` reactions and best-effort post-prompt bubbles
-- **Lets you view** them anytime with a simple command
+- **Lets you browse** them in a local archive UI with recent, mattered, project, session, and search views
+- **Lets you mark** a bubble as mattered and attach a short note about why
 
-It's like having a journal of your buddy's wisest, funniest, and most helpful comments.
+It is a small local memory layer for things your Claude buddy said that were actually worth keeping.
 
 ---
 
@@ -29,7 +30,7 @@ It's like having a journal of your buddy's wisest, funniest, and most helpful co
 curl -sSL https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/main/install.sh | bash
 ```
 
-The installer downloads the Glimmer scripts into `~/.local/bin`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
+The installer downloads the Glimmer launchers into `~/.local/bin` and installs the local UI assets into `~/.local/share/glimmer/`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -95,7 +96,7 @@ glimmer-log --json
 glimmer-ui
 ```
 
-That opens a small local app for browsing recent bubbles, projects, sessions, and search. It reads your existing local Glimmer files and does not upload anything.
+That opens a small local app for browsing recent bubbles, mattered bubbles, projects, sessions, and search. You can also mark a bubble as mattered and leave an optional note about why it mattered. It reads and writes only your local Glimmer files and does not upload anything.
 
 ### Watcher Debug Output
 By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.
@@ -188,6 +189,22 @@ This is the watcher's own debug log.
 
 The watcher writes its internal status here instead of printing into Claude's fullscreen UI by default.
 
+### `~/.claude/glimmer/mattered.json`
+This stores explicit mattered marks and optional notes from the local archive UI.
+
+Each entry is keyed by Glimmer's bubble id:
+```json
+{
+  "79f685c0ff19556e": {
+    "note": "This changed the direction.",
+    "marked_at": "2026-04-03T11:00:00+00:00",
+    "updated_at": "2026-04-03T11:05:00+00:00"
+  }
+}
+```
+
+This file is used by `glimmer-ui` to show mattered counts, the dedicated mattered view, and any notes you attached to a bubble.
+
 ### Summary
 All bubbles are still saved locally. The split is:
 ```
@@ -196,6 +213,7 @@ events.jsonl   richer auto-capture metadata
 sessions/      one manifest per Claude run
 raw/           raw terminal recordings
 watcher.log    watcher debug output
+mattered.json  explicit mattered marks and notes
 ```
 
 **Your data stays on your machine.** Glimmer never uploads anything.
@@ -208,6 +226,7 @@ watcher.log    watcher debug output
 - **`glimmer-claude`** starts Claude inside `script`, creates a session id, writes a session manifest, and launches the watcher.
 - **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, and writes logs.
 - **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for.
+- **`glimmer-ui`** serves the local archive app, merges mattered marks and notes, and exposes the visual browser over localhost.
 
 Session context is separate from trigger attribution:
 
@@ -296,9 +315,10 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Trigger tagging** — Exact `/buddy pet` and best-effort post-prompt attribution  
 ✅ **Cleaner terminal UI** — Watcher debug output is separate by default  
 ✅ **More stable capture** — Bubble text must survive more than one scan before logging  
-✅ **Lightweight** — ~300 lines of Python, minimal dependencies  
+✅ **Local archive UI** — Recent, mattered, projects, sessions, and search  
+✅ **Human signal** — Mark bubbles as mattered and attach optional notes  
+✅ **Lightweight** — Small local toolchain, minimal dependencies  
 ✅ **Privacy-first** — All data stays local  
-✅ **Simple** — Just 3 scripts, no bloat  
 ✅ **Portable** — Works on any system with Python 3.7+ and Claude Code  
 
 ---
@@ -335,7 +355,6 @@ Check out [CONTRIBUTING.md](CONTRIBUTING.md) for ideas and guidelines.
 
 Some ideas:
 - Export to HTML, Markdown, or other formats
-- Search and filter bubbles by keyword or date
 - IDE integration (VS Code, JetBrains, etc.)
 - Buddy quote analytics
 
@@ -349,7 +368,7 @@ MIT — Use it, modify it, share it. Your buddy would approve.
 
 <div align="center">
 
-**Made for anyone who cherishes their buddy's comments.**
+**Made for people who want a real local archive of buddy moments that mattered.**
 
 [Issues](https://github.com/reallyunintented/GlimmerYourBuddy/issues) · [Discussions](https://github.com/reallyunintented/GlimmerYourBuddy/discussions)
 

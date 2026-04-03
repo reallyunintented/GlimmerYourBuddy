@@ -5,10 +5,9 @@ Found a bug? Have a feature idea? Love Glimmer and want to help?
 ## Ideas for Improvement
 
 - **Export formats** — HTML, JSON, plaintext collections
-- **Search** — Find bubbles by keyword or date range
 - **Stats** — More detailed analytics on buddy comments
 - **Sync** — Optional cloud backup (respecting privacy)
-- **Themes** — Custom display styles for `glimmer-log`
+- **Themes** — Alternative visual treatments for `glimmer-ui`
 - **Integration** — IDE plugins to view bubbles within your editor
 
 ## Getting Started
@@ -30,6 +29,8 @@ The runtime is split on purpose:
   Parses the raw terminal recording, extracts stable speech-bubble text, writes plain entries to `log.jsonl`, and writes richer auto-capture metadata to `events.jsonl`.
 - `glimmer-log`
   Reads `log.jsonl` for the all-time plain view and reads `events.jsonl` plus `sessions/` for grouped session output.
+- `glimmer-ui`
+  Runs the local archive app over localhost, merges mattered marks, and serves the frontend from `ui/`.
 
 Important storage paths:
 
@@ -43,6 +44,8 @@ Important storage paths:
   Raw `script` recordings used for parser debugging.
 - `~/.claude/glimmer/watcher.log`
   Watcher debug output. The watcher should stay quiet on the Claude UI unless explicitly requested.
+- `~/.claude/glimmer/mattered.json`
+  Explicit mattered marks and optional notes created in the local archive UI.
 
 ## How Capture Works
 
@@ -57,12 +60,14 @@ This is the internal flow:
 7. The watcher requires the same bubble text to survive more than one scan before it logs it.
 8. The plain bubble is appended to `log.jsonl`.
 9. The richer auto-capture event is appended to `events.jsonl`.
-10. When the session exits, `glimmer-claude` fills in `ended_at` in the manifest and stops the watcher.
+10. `glimmer-ui` can layer mattered marks and notes on top of captured bubbles via `mattered.json`.
+11. When the session exits, `glimmer-claude` fills in `ended_at` in the manifest and stops the watcher.
 
 Why the split exists:
 
 - `log.jsonl` must stay stable and simple for compatibility.
 - `events.jsonl` can evolve to hold session ids, exact repo context, trigger metadata, and future sidecar fields.
+- `mattered.json` is user-authored signal and should stay separate from passive capture data.
 - watcher debug output belongs in `watcher.log`, not on the shared fullscreen Claude terminal.
 
 ## Manifest Schema
@@ -137,6 +142,8 @@ Automated coverage lives under `tests/` and should cover:
 - `glimmer-log --cwd`
 - `glimmer-log --grep`
 - `glimmer-log --cleanup-raw`
+- `glimmer-ui` index aggregation
+- mattered mark and note merging
 
 Run the automated suite with:
 
@@ -163,6 +170,7 @@ When changing parser behavior, check all of these:
 - the live terminal stays readable and the watcher does not print across Claude's fullscreen UI
 - `log.jsonl` remains plain and backward compatible
 - `events.jsonl` keeps session, exact repo context, and trigger metadata
+- mattered marks remain local-only and do not mutate capture logs
 - the latest session manifest gets both `started_at` and `ended_at` plus correct repo context
 - a large or slowly painted bubble is not saved too early
 - the watcher still performs a final scan on shutdown
