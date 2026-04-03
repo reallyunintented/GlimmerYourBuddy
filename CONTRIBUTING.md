@@ -62,7 +62,7 @@ This is the internal flow:
 9. The richer auto-capture event is appended to `events.jsonl`.
 10. `glimmer-ui` can layer mattered marks and review state on top of captured bubbles via `mattered.json`.
 11. Shared review, recurrence, and resurface logic currently lives in `glimmer-ui` so the UI and future machine interfaces can consume the same output.
-11. When the session exits, `glimmer-claude` fills in `ended_at` in the manifest and stops the watcher.
+12. When the session exits, `glimmer-claude` fills in `ended_at` in the manifest and stops the watcher.
 
 Why the split exists:
 
