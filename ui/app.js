@@ -8,6 +8,7 @@ const state = {
   selectedSessionId: null,
   selectedProjectKey: null,
   matterSaving: false,
+  reviewSaving: false,
 };
 
 const elements = {
@@ -21,6 +22,27 @@ const elements = {
   refreshButton: document.getElementById("refresh-button"),
   navLinks: Array.from(document.querySelectorAll(".nav-link")),
   emptyTemplate: document.getElementById("empty-state-template"),
+};
+
+const REVIEW_STATES = ["unreviewed", "open", "used", "stale"];
+
+const REVIEW_META = {
+  unreviewed: {
+    label: "Unreviewed",
+    description: "Freshly marked, not revisited yet.",
+  },
+  open: {
+    label: "Open",
+    description: "Still active or worth carrying forward.",
+  },
+  used: {
+    label: "Used",
+    description: "Already folded back into the work.",
+  },
+  stale: {
+    label: "Stale",
+    description: "Kept for context, no longer active.",
+  },
 };
 
 const formatDateTime = (value) => {
@@ -133,6 +155,9 @@ const renderOverview = () => {
 const bubbleChips = (bubble) => {
   const chips = [];
   if (bubble.mattered) chips.push(`<span class="chip chip-accent">Mattered</span>`);
+  if (bubble.mattered && bubble.review_state) {
+    chips.push(`<span class="chip">${escapeHtml(REVIEW_META[bubble.review_state]?.label || bubble.review_state)}</span>`);
+  }
   if (bubble.project_name) chips.push(`<span class="chip">${escapeHtml(bubble.project_name)}</span>`);
   if (bubble.git_branch) chips.push(`<span class="chip">${escapeHtml(bubble.git_branch)}</span>`);
   if (bubble.trigger_type && bubble.trigger_type !== "unknown") {
@@ -181,6 +206,24 @@ const renderBubbleGroups = (bubbles) => {
     stack.append(section);
   });
   elements.mainContent.append(stack);
+};
+
+const reviewSortKey = (bubble) => {
+  const reviewedAt = bubble.reviewed_at ? new Date(bubble.reviewed_at).getTime() : 0;
+  const matteredAt = bubble.mattered_at ? new Date(bubble.mattered_at).getTime() : 0;
+  const timestamp = bubble.timestamp ? new Date(bubble.timestamp).getTime() : 0;
+  return Math.max(reviewedAt || 0, matteredAt || 0, timestamp || 0);
+};
+
+const reviewGroups = () => {
+  const mattered = (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
+  return REVIEW_STATES.map((reviewState) => ({
+    key: reviewState,
+    meta: REVIEW_META[reviewState],
+    bubbles: mattered
+      .filter((bubble) => (bubble.review_state || "unreviewed") === reviewState)
+      .sort((left, right) => reviewSortKey(right) - reviewSortKey(left)),
+  }));
 };
 
 const renderProjects = () => {
@@ -364,13 +407,88 @@ const renderMattered = () => {
     );
     return;
   }
+  if (!bubbleById(state.selectedBubbleId)?.mattered) {
+    state.selectedBubbleId = mattered[0].id;
+  }
   renderBubbleGroups(mattered);
 };
 
+const renderReview = () => {
+  const groups = reviewGroups();
+  const total = groups.reduce((sum, group) => sum + group.bubbles.length, 0);
+  if (!total) {
+    elements.mainContent.replaceChildren(
+      buildEmptyState(
+        "No mattered bubbles to review",
+        "Mark a bubble as mattered first. It will land here as unreviewed and move through the review states."
+      )
+    );
+    return;
+  }
+  if (!bubbleById(state.selectedBubbleId)?.mattered) {
+    const firstBubble = groups.find((group) => group.bubbles[0])?.bubbles[0];
+    if (firstBubble) state.selectedBubbleId = firstBubble.id;
+  }
+
+  elements.mainContent.innerHTML = "";
+  const stack = document.createElement("div");
+  stack.className = "section-stack";
+  stack.innerHTML = `
+    <section class="review-summary">
+      ${groups
+        .map(
+          (group) => `
+            <article class="review-summary-card">
+              <div class="card-meta">${escapeHtml(group.meta.label)}</div>
+              <strong>${group.bubbles.length}</strong>
+              <p>${escapeHtml(group.meta.description)}</p>
+            </article>
+          `
+        )
+        .join("")}
+    </section>
+  `;
+
+  groups.forEach((group) => {
+    const section = document.createElement("section");
+    section.innerHTML = `
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">${escapeHtml(group.meta.label)}</h3>
+          <p class="section-copy">${escapeHtml(group.meta.description)}</p>
+        </div>
+        <span class="muted">${group.bubbles.length}</span>
+      </div>
+      ${
+        group.bubbles.length
+          ? `<div class="card-list">${group.bubbles.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>`
+          : '<div class="review-empty">Nothing here right now.</div>'
+      }
+    `;
+    stack.append(section);
+  });
+  elements.mainContent.append(stack);
+};
+
 const renderDetail = () => {
+  const matteredBubbles = (state.data?.bubbles ?? []).filter((entry) => entry.mattered);
+  if ((state.view === "mattered" || state.view === "review") && matteredBubbles.length === 0) {
+    elements.detail.replaceChildren(
+      buildEmptyState(
+        state.view === "review" ? "Nothing to review yet" : "Nothing marked yet",
+        state.view === "review"
+          ? "Mark a bubble as mattered first. Review states appear here once something enters the loop."
+          : "Mark a bubble as mattered and it will appear here with notes and review controls."
+      )
+    );
+    return;
+  }
+
   const bubble = bubbleById(state.selectedBubbleId);
   if (bubble) {
     const session = sessionForBubble(bubble);
+    const detailBusy = state.matterSaving || state.reviewSaving;
+    const reviewState = bubble.review_state || "unreviewed";
     elements.detail.innerHTML = `
       <div class="detail-stack">
         <section class="detail-block">
@@ -389,20 +507,53 @@ const renderDetail = () => {
               id="matter-note-input"
               class="matter-note-input"
               placeholder="Optional note about why this mattered."
+              ${detailBusy ? "disabled" : ""}
             >${escapeHtml(bubble.matter_note || "")}</textarea>
             <div class="matter-actions">
-              <button class="link-button" data-save-matter="${bubble.id}">
+              <button class="link-button" data-save-matter="${bubble.id}" ${detailBusy ? "disabled" : ""}>
                 ${state.matterSaving ? "Saving..." : bubble.mattered ? "Save note" : "Mark mattered"}
               </button>
               ${
                 bubble.mattered
-                  ? `<button class="secondary-button" data-clear-matter="${bubble.id}" ${state.matterSaving ? "disabled" : ""}>Unmark</button>`
+                  ? `<button class="secondary-button" data-clear-matter="${bubble.id}" ${detailBusy ? "disabled" : ""}>Unmark</button>`
                   : ""
               }
             </div>
             ${
               bubble.mattered_at
                 ? `<p class="matter-meta">Marked ${escapeHtml(formatDateTime(bubble.mattered_at))}${bubble.matter_updated_at && bubble.matter_updated_at !== bubble.mattered_at ? ` · updated ${escapeHtml(formatDateTime(bubble.matter_updated_at))}` : ""}</p>`
+                : ""
+            }
+            ${
+              bubble.mattered
+                ? `
+                  <section class="review-panel">
+                    <div class="matter-head">
+                      <div>
+                        <p class="eyebrow">Review State</p>
+                        <p class="matter-copy">Move mattered bubbles through a small review loop instead of letting them pile up.</p>
+                      </div>
+                    </div>
+                    <div class="review-state-row">
+                      ${REVIEW_STATES.map(
+                        (stateValue) => `
+                          <button
+                            class="chip-button ${reviewState === stateValue ? "is-active" : ""}"
+                            data-review-state-bubble="${bubble.id}"
+                            data-review-state-value="${stateValue}"
+                            ${detailBusy ? "disabled" : ""}
+                          >
+                            ${escapeHtml(REVIEW_META[stateValue].label)}
+                          </button>
+                        `
+                      ).join("")}
+                    </div>
+                    <p class="matter-meta">
+                      ${escapeHtml(REVIEW_META[reviewState]?.description || "")}
+                      ${bubble.reviewed_at ? ` · updated ${escapeHtml(formatDateTime(bubble.reviewed_at))}` : ""}
+                    </p>
+                  </section>
+                `
                 : ""
             }
           </section>
@@ -417,6 +568,7 @@ const renderDetail = () => {
             <div class="meta-item"><dt>Trigger</dt><dd>${escapeHtml(bubble.trigger_type || "Unknown")}</dd></div>
             <div class="meta-item"><dt>Source</dt><dd>${escapeHtml(bubble.source || "legacy")}</dd></div>
             <div class="meta-item"><dt>Mattered</dt><dd>${bubble.mattered ? "Yes" : "No"}</dd></div>
+            ${bubble.mattered ? `<div class="meta-item"><dt>Review state</dt><dd>${escapeHtml(REVIEW_META[reviewState]?.label || reviewState)}</dd></div>` : ""}
           </dl>
         </section>
       </div>
@@ -502,6 +654,32 @@ const saveMatter = async (bubbleId, marked) => {
   }
 };
 
+const saveReviewState = async (bubbleId, reviewState) => {
+  state.reviewSaving = true;
+  renderDetail();
+  try {
+    const response = await fetch("/api/review-state", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        bubble_id: bubbleId,
+        review_state: reviewState,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Review update failed with ${response.status}`);
+    }
+    await loadData();
+  } catch (error) {
+    console.error("Failed to update review state:", error);
+  } finally {
+    state.reviewSaving = false;
+    renderDetail();
+  }
+};
+
 const renderMain = () => {
   if (state.loading || !state.data) {
     elements.mainContent.replaceChildren(
@@ -522,6 +700,7 @@ const renderMain = () => {
   const titles = {
     recent: ["Recent bubbles", "Recent"],
     mattered: ["Bubbles you marked as mattered", "Mattered"],
+    review: ["Review mattered bubbles", "Review"],
     projects: ["Archive by project", "Projects"],
     sessions: ["Archive by session", "Sessions"],
     search: ["Search local history", "Search"],
@@ -536,6 +715,10 @@ const renderMain = () => {
   }
   if (state.view === "mattered") {
     renderMattered();
+    return;
+  }
+  if (state.view === "review") {
+    renderReview();
     return;
   }
   if (state.view === "projects") {
@@ -657,6 +840,15 @@ document.addEventListener("click", (event) => {
   const clearMatterButton = event.target.closest("[data-clear-matter]");
   if (clearMatterButton && !state.matterSaving) {
     void saveMatter(clearMatterButton.dataset.clearMatter, false);
+    return;
+  }
+
+  const reviewStateButton = event.target.closest("[data-review-state-bubble]");
+  if (reviewStateButton && !state.reviewSaving && !state.matterSaving) {
+    void saveReviewState(
+      reviewStateButton.dataset.reviewStateBubble,
+      reviewStateButton.dataset.reviewStateValue
+    );
   }
 });
 
