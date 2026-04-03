@@ -25,7 +25,7 @@ It's like having a journal of your buddy's wisest, funniest, and most helpful co
 curl -sSL https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/main/install.sh | bash
 ```
 
-Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
+The installer downloads the Glimmer scripts into `~/.local/bin`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -34,8 +34,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ```bash
 git clone https://github.com/reallyunintented/GlimmerYourBuddy.git
 cd GlimmerYourBuddy
-chmod +x glimmer-* install.sh
-cp glimmer-* ~/.local/bin/
+./install.sh
 ```
 
 ---

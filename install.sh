@@ -1,29 +1,58 @@
 #!/usr/bin/env bash
 #
-# Glimmer install script — copies scripts to ~/.local/bin
+# Glimmer install script — installs scripts into ~/.local/bin
 #
 
-set -e
+set -euo pipefail
 
 BIN_DIR="${HOME}/.local/bin"
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_URL="${GLIMMER_BASE_URL:-https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/main}"
+SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py)
 
-# Create bin dir if needed
+fetch_script() {
+    local script="$1"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "${BASE_URL}/${script}"
+        return
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- "${BASE_URL}/${script}"
+        return
+    fi
+
+    echo "Error: install requires curl or wget." >&2
+    exit 1
+}
+
+install_script() {
+    local script="$1"
+    local target="$BIN_DIR/$script"
+
+    if [ -f "$SCRIPT_DIR/$script" ]; then
+        cp "$SCRIPT_DIR/$script" "$target"
+    else
+        local tmp_file
+        tmp_file="$(mktemp)"
+        fetch_script "$script" > "$tmp_file"
+        mv "$tmp_file" "$target"
+    fi
+
+    chmod +x "$target"
+    echo "Installed $script"
+}
+
 mkdir -p "$BIN_DIR"
 
-# Copy scripts
-for script in glimmer-claude glimmer-log glimmer-watcher.py; do
-    if [ -f "$REPO_DIR/$script" ]; then
-        cp "$REPO_DIR/$script" "$BIN_DIR/$script"
-        chmod +x "$BIN_DIR/$script"
-        echo "✓ Installed $script"
-    fi
+for script in "${SCRIPTS[@]}"; do
+    install_script "$script"
 done
 
-# Check if ~/.local/bin is in PATH
-if ! echo "$PATH" | grep -q "$BIN_DIR"; then
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
-    echo "⚠ ~/.local/bin is not in your PATH"
+    echo "~/.local/bin is not in your PATH"
     echo "Add this to ~/.bashrc or ~/.zshrc:"
     echo ""
     echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
@@ -31,7 +60,7 @@ if ! echo "$PATH" | grep -q "$BIN_DIR"; then
 fi
 
 echo ""
-echo "✓ Glimmer installed!"
+echo "Glimmer installed."
 echo ""
 echo "Next: Run 'glimmer-claude' instead of 'claude' to start capturing."
 echo "View bubbles with: glimmer-log"

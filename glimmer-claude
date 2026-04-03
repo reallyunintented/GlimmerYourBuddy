@@ -13,7 +13,34 @@ set -euo pipefail
 
 GLIMMER_DIR="$HOME/.claude/glimmer"
 RAW_DIR="$GLIMMER_DIR/raw"
-WATCHER="$HOME/.local/bin/glimmer-watcher.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WATCHER="${GLIMMER_WATCHER:-}"
+
+if [ -z "$WATCHER" ]; then
+    if command -v glimmer-watcher.py >/dev/null 2>&1; then
+        WATCHER="$(command -v glimmer-watcher.py)"
+    elif [ -x "$SCRIPT_DIR/glimmer-watcher.py" ]; then
+        WATCHER="$SCRIPT_DIR/glimmer-watcher.py"
+    else
+        WATCHER="$HOME/.local/bin/glimmer-watcher.py"
+    fi
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+    echo "Error: 'claude' is not in PATH." >&2
+    exit 1
+fi
+
+if ! command -v script >/dev/null 2>&1; then
+    echo "Error: 'script' is required but not installed." >&2
+    exit 1
+fi
+
+if [ ! -x "$WATCHER" ]; then
+    echo "Error: could not find glimmer-watcher.py." >&2
+    echo "Install Glimmer first or set GLIMMER_WATCHER to its path." >&2
+    exit 1
+fi
 
 mkdir -p "$RAW_DIR"
 
@@ -40,16 +67,19 @@ python3 "$WATCHER" "$TYPESCRIPT" "$COMPANION_NAME" &
 WATCHER_PID=$!
 
 cleanup() {
-    kill "$WATCHER_PID" 2>/dev/null || true
-    wait "$WATCHER_PID" 2>/dev/null || true
-    # Give watcher one final chance to process remaining data
-    sleep 0.5
+    local exit_code=$?
+
+    if kill -0 "$WATCHER_PID" 2>/dev/null; then
+        kill -TERM "$WATCHER_PID" 2>/dev/null || true
+        wait "$WATCHER_PID" 2>/dev/null || true
+    fi
     # Clean up empty raw files
     if [ -f "$TYPESCRIPT" ] && [ ! -s "$TYPESCRIPT" ]; then
         rm -f "$TYPESCRIPT"
     fi
     echo ""
     echo "[glimmer-claude] Session ended. Bubbles saved to $GLIMMER_DIR/log.jsonl"
+    return "$exit_code"
 }
 trap cleanup EXIT
 

@@ -11,6 +11,7 @@ Usage: glimmer-watcher.py <typescript-file> [companion-name]
 import json
 import os
 import re
+import signal
 import sys
 import time
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ ANSI_RE = re.compile(
 TOP_RE = re.compile(r"╭(─+)╮")
 BOT_RE = re.compile(r"╰(─+)╯")
 MID_RE = re.compile(r"│(.+?)│")
+STOP_REQUESTED = False
 
 
 def strip_ansi(text: str) -> str:
@@ -117,6 +119,11 @@ def load_seen() -> set[str]:
     return seen
 
 
+def request_stop(_signum, _frame):
+    global STOP_REQUESTED
+    STOP_REQUESTED = True
+
+
 def log_bubble(text: str, companion: str):
     """Append a bubble to the log file."""
     entry = {
@@ -126,6 +133,22 @@ def log_bubble(text: str, companion: str):
     }
     with open(LOGFILE, "a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+def scan_buffer(
+    buf: str, seen: set[str], session_seen: set[str], companion: str
+) -> None:
+    """Extract and persist unseen bubbles from the current buffer."""
+    cleaned = strip_ansi(buf)
+    bubbles = extract_bubbles(cleaned)
+    for bubble in bubbles:
+        if bubble not in seen and bubble not in session_seen:
+            seen.add(bubble)
+            session_seen.add(bubble)
+            log_bubble(bubble, companion)
+            preview = bubble[:60]
+            suffix = "..." if len(bubble) > 60 else ""
+            print(f'[glimmer-watcher] Caught: "{preview}{suffix}"')
 
 
 def tail_and_watch(filepath: str, companion: str):
@@ -155,14 +178,22 @@ def tail_and_watch(filepath: str, companion: str):
             pass
 
         if buf:
-            cleaned = strip_ansi(buf)
-            bubbles = extract_bubbles(cleaned)
-            for b in bubbles:
-                if b not in seen and b not in session_seen:
-                    seen.add(b)
-                    session_seen.add(b)
-                    log_bubble(b, companion)
-                    print(f"[glimmer-watcher] Caught: \"{b[:60]}{'...' if len(b) > 60 else ''}\"")
+            scan_buffer(buf, seen, session_seen, companion)
+
+        if STOP_REQUESTED:
+            try:
+                with open(filepath, "rb") as f:
+                    f.seek(file_pos)
+                    new_data = f.read()
+                    if new_data:
+                        file_pos += len(new_data)
+                        buf += new_data.decode("utf-8", errors="replace")
+            except FileNotFoundError:
+                pass
+
+            if buf:
+                scan_buffer(buf, seen, session_seen, companion)
+            break
 
         time.sleep(SCAN_INTERVAL)
 
@@ -176,6 +207,8 @@ def main():
     companion = sys.argv[2] if len(sys.argv) > 2 else "Glimmer"
 
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
 
     try:
         tail_and_watch(filepath, companion)

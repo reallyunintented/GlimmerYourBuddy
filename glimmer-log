@@ -10,22 +10,31 @@
 #   glimmer-log --add "text here"  Manually add a bubble
 #
 
+set -euo pipefail
+
 LOGFILE="$HOME/.claude/glimmer/log.jsonl"
 
-if [ ! -f "$LOGFILE" ]; then
-    echo "No bubbles captured yet."
-    echo "Run 'glimmer-claude' instead of 'claude' to start logging."
-    exit 0
-fi
+require_logfile() {
+    if [ ! -f "$LOGFILE" ]; then
+        echo "No bubbles captured yet."
+        echo "Run 'glimmer-claude' instead of 'claude' to start logging."
+        exit 0
+    fi
+}
 
 show_pretty() {
     local limit="${1:-0}"
-    python3 -c "
-import json, sys
+    python3 - "$LOGFILE" "$limit" <<'PY'
+import json
+import sys
 from datetime import datetime
 
-lines = open('$LOGFILE').readlines()
-limit = $limit
+logfile = sys.argv[1]
+limit = int(sys.argv[2])
+
+with open(logfile, encoding="utf-8") as handle:
+    lines = handle.readlines()
+
 if limit > 0:
     lines = lines[-limit:]
 
@@ -46,21 +55,26 @@ for line in lines:
         print()
     except json.JSONDecodeError:
         pass
-"
+PY
 }
 
 show_stats() {
-    python3 -c "
+    python3 - "$LOGFILE" <<'PY'
 import json
+import sys
 from datetime import datetime
-from collections import Counter
 
-lines = open('$LOGFILE').readlines()
+logfile = sys.argv[1]
+
+with open(logfile, encoding="utf-8") as handle:
+    lines = handle.readlines()
+
 entries = []
 for line in lines:
     try:
         entries.append(json.loads(line))
-    except: pass
+    except json.JSONDecodeError:
+        pass
 
 if not entries:
     print('No bubbles yet.')
@@ -82,8 +96,10 @@ print(f'Average bubble length: {avg_len:.0f} chars')
 
 # Longest
 longest = max(entries, key=lambda e: len(e.get('text','')))
-print(f'Longest: \"{longest[\"text\"][:80]}...\"')
-"
+preview = longest['text'][:80]
+suffix = '...' if len(longest['text']) > 80 else ''
+print(f'Longest: "{preview}{suffix}"')
+PY
 }
 
 add_bubble() {
@@ -91,23 +107,38 @@ add_bubble() {
     local ts
     ts="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
     mkdir -p "$(dirname "$LOGFILE")"
-    python3 -c "
+    python3 - "$LOGFILE" "$ts" "$text" <<'PY'
 import json
-entry = {'timestamp': '$ts', 'companion': 'Glimmer', 'text': '''$text''', 'source': 'manual'}
-with open('$LOGFILE', 'a') as f:
-    f.write(json.dumps(entry) + '\n')
+import sys
+
+logfile, timestamp, text = sys.argv[1:4]
+entry = {
+    'timestamp': timestamp,
+    'companion': 'Glimmer',
+    'text': text,
+    'source': 'manual',
+}
+with open(logfile, 'a', encoding='utf-8') as handle:
+    handle.write(json.dumps(entry) + '\n')
 print('Added.')
-"
+PY
 }
 
 case "${1:-}" in
     --json)
+        require_logfile
         cat "$LOGFILE"
         ;;
     --stats)
+        require_logfile
         show_stats
         ;;
     -n)
+        require_logfile
+        if ! [[ "${2:-10}" =~ ^[0-9]+$ ]]; then
+            echo "Error: -n expects a non-negative integer." >&2
+            exit 1
+        fi
         show_pretty "${2:-10}"
         ;;
     --add)
@@ -129,6 +160,7 @@ case "${1:-}" in
         echo "  -h, --help       Show this help"
         ;;
     *)
+        require_logfile
         show_pretty 0
         ;;
 esac
