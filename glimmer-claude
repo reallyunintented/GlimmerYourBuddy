@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# glimmer-claude — Run Claude Code with Glimmer speech bubble logging.
+#
+# Wraps `claude` inside `script` to capture terminal output, then runs
+# a background watcher that extracts speech bubbles and logs them to
+# ~/.claude/glimmer/log.jsonl
+#
+# Usage: glimmer-claude [any claude args...]
+#
+
+set -euo pipefail
+
+GLIMMER_DIR="$HOME/.claude/glimmer"
+RAW_DIR="$GLIMMER_DIR/raw"
+WATCHER="$HOME/.local/bin/glimmer-watcher.py"
+
+mkdir -p "$RAW_DIR"
+
+# Get companion name from config
+COMPANION_NAME=$(python3 -c "
+import json, os
+try:
+    cfg = json.load(open(os.path.expanduser('~/.claude.json')))
+    print(cfg.get('companion', {}).get('name', 'Glimmer'))
+except: print('Glimmer')
+" 2>/dev/null || echo "Glimmer")
+
+# Session-specific raw capture file
+SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
+TYPESCRIPT="$RAW_DIR/session-${SESSION_ID}.raw"
+
+echo "Starting Claude Code with Glimmer logging..."
+echo "  Companion: $COMPANION_NAME"
+echo "  Log file:  $GLIMMER_DIR/log.jsonl"
+echo ""
+
+# Start the watcher in background
+python3 "$WATCHER" "$TYPESCRIPT" "$COMPANION_NAME" &
+WATCHER_PID=$!
+
+cleanup() {
+    kill "$WATCHER_PID" 2>/dev/null || true
+    wait "$WATCHER_PID" 2>/dev/null || true
+    # Give watcher one final chance to process remaining data
+    sleep 0.5
+    # Clean up empty raw files
+    if [ -f "$TYPESCRIPT" ] && [ ! -s "$TYPESCRIPT" ]; then
+        rm -f "$TYPESCRIPT"
+    fi
+    echo ""
+    echo "[glimmer-claude] Session ended. Bubbles saved to $GLIMMER_DIR/log.jsonl"
+}
+trap cleanup EXIT
+
+# Create the raw file so the watcher can start tailing immediately
+touch "$TYPESCRIPT"
+
+# Build the claude command with properly quoted args
+CLAUDE_CMD="claude"
+for arg in "$@"; do
+    CLAUDE_CMD+=" $(printf '%q' "$arg")"
+done
+
+# Run claude inside `script` to capture terminal output
+# -q: quiet (don't print script's own messages)
+# -f: flush output after each write
+# -c: command to run
+script -q -f "$TYPESCRIPT" -c "$CLAUDE_CMD"

@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# glimmer-log — View Glimmer's captured speech bubbles.
+#
+# Usage:
+#   glimmer-log          Show all bubbles
+#   glimmer-log -n 10    Show last 10 bubbles
+#   glimmer-log --json   Raw JSONL output
+#   glimmer-log --stats  Show statistics
+#   glimmer-log --add "text here"  Manually add a bubble
+#
+
+LOGFILE="$HOME/.claude/glimmer/log.jsonl"
+
+if [ ! -f "$LOGFILE" ]; then
+    echo "No bubbles captured yet."
+    echo "Run 'glimmer-claude' instead of 'claude' to start logging."
+    exit 0
+fi
+
+show_pretty() {
+    local limit="${1:-0}"
+    python3 -c "
+import json, sys
+from datetime import datetime
+
+lines = open('$LOGFILE').readlines()
+limit = $limit
+if limit > 0:
+    lines = lines[-limit:]
+
+for line in lines:
+    try:
+        e = json.loads(line)
+        ts = e.get('timestamp', '')
+        # Parse and format timestamp
+        try:
+            dt = datetime.fromisoformat(ts)
+            ts_str = dt.strftime('%Y-%m-%d %H:%M')
+        except:
+            ts_str = ts[:16]
+        name = e.get('companion', 'Glimmer')
+        text = e.get('text', '')
+        print(f'  \033[2m{ts_str}\033[0m  \033[1;35m{name}\033[0m')
+        print(f'  \033[3m\"{text}\"\033[0m')
+        print()
+    except json.JSONDecodeError:
+        pass
+"
+}
+
+show_stats() {
+    python3 -c "
+import json
+from datetime import datetime
+from collections import Counter
+
+lines = open('$LOGFILE').readlines()
+entries = []
+for line in lines:
+    try:
+        entries.append(json.loads(line))
+    except: pass
+
+if not entries:
+    print('No bubbles yet.')
+    exit()
+
+print(f'Total bubbles captured: {len(entries)}')
+
+# First and last
+try:
+    first = datetime.fromisoformat(entries[0]['timestamp'])
+    last = datetime.fromisoformat(entries[-1]['timestamp'])
+    print(f'First: {first.strftime(\"%Y-%m-%d %H:%M\")}')
+    print(f'Last:  {last.strftime(\"%Y-%m-%d %H:%M\")}')
+except: pass
+
+# Average length
+avg_len = sum(len(e.get('text','')) for e in entries) / len(entries)
+print(f'Average bubble length: {avg_len:.0f} chars')
+
+# Longest
+longest = max(entries, key=lambda e: len(e.get('text','')))
+print(f'Longest: \"{longest[\"text\"][:80]}...\"')
+"
+}
+
+add_bubble() {
+    local text="$1"
+    local ts
+    ts="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+    mkdir -p "$(dirname "$LOGFILE")"
+    python3 -c "
+import json
+entry = {'timestamp': '$ts', 'companion': 'Glimmer', 'text': '''$text''', 'source': 'manual'}
+with open('$LOGFILE', 'a') as f:
+    f.write(json.dumps(entry) + '\n')
+print('Added.')
+"
+}
+
+case "${1:-}" in
+    --json)
+        cat "$LOGFILE"
+        ;;
+    --stats)
+        show_stats
+        ;;
+    -n)
+        show_pretty "${2:-10}"
+        ;;
+    --add)
+        shift
+        if [ -z "${1:-}" ]; then
+            echo "Usage: glimmer-log --add \"bubble text here\""
+            exit 1
+        fi
+        add_bubble "$*"
+        ;;
+    -h|--help)
+        echo "Usage: glimmer-log [OPTIONS]"
+        echo ""
+        echo "  (no args)        Show all captured bubbles"
+        echo "  -n NUM           Show last NUM bubbles"
+        echo "  --add \"text\"     Manually add a bubble"
+        echo "  --json           Raw JSONL output"
+        echo "  --stats          Show statistics"
+        echo "  -h, --help       Show this help"
+        ;;
+    *)
+        show_pretty 0
+        ;;
+esac
