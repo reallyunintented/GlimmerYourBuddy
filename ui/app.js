@@ -125,22 +125,24 @@ const renderOverview = () => {
   elements.generatedAt.textContent = `Updated ${formatShort(state.data.generated_at)}`;
 };
 
-const metaChips = (bubble) => {
+const bubbleChips = (bubble) => {
   const chips = [];
   if (bubble.project_name) chips.push(`<span class="chip">${escapeHtml(bubble.project_name)}</span>`);
   if (bubble.git_branch) chips.push(`<span class="chip">${escapeHtml(bubble.git_branch)}</span>`);
   if (bubble.trigger_type && bubble.trigger_type !== "unknown") {
     chips.push(`<span class="chip">${escapeHtml(bubble.trigger_type)}</span>`);
   }
-  chips.push(`<span class="chip">${escapeHtml(formatShort(bubble.timestamp))}</span>`);
-  return `<div class="chip-row">${chips.join("")}</div>`;
+  return chips.length ? `<div class="chip-row">${chips.join("")}</div>` : "";
 };
 
 const bubbleCard = (bubble, { compact = false } = {}) => `
-  <article class="card ${bubble.id === state.selectedBubbleId ? "is-selected" : ""}" data-bubble-id="${bubble.id}">
-    <div class="card-meta">${escapeHtml(bubble.companion)}</div>
+  <article class="card card-bubble ${bubble.id === state.selectedBubbleId ? "is-selected" : ""}" data-bubble-id="${bubble.id}">
+    <div class="card-head">
+      <div class="card-meta">${escapeHtml(bubble.companion)}</div>
+      <div class="card-time">${escapeHtml(formatShort(bubble.timestamp))}</div>
+    </div>
     <p class="card-text">${escapeHtml(compact ? bubble.preview : bubble.text)}</p>
-    ${metaChips(bubble)}
+    ${bubbleChips(bubble)}
   </article>
 `;
 
@@ -190,12 +192,15 @@ const renderProjects = () => {
   wrap.innerHTML = projects
     .map(
       (project) => `
-        <article class="card ${project.project_key === state.selectedProjectKey ? "is-selected" : ""}" data-project-key="${escapeHtml(project.project_key)}">
+        <article class="card card-project ${project.project_key === state.selectedProjectKey ? "is-selected" : ""}" data-project-key="${escapeHtml(project.project_key)}">
+          <div class="card-head">
+            <div class="card-meta">Project</div>
+            <div class="card-time">${escapeHtml(formatShort(project.last_seen_at))}</div>
+          </div>
           <h3 class="card-title">${escapeHtml(project.project_label)}</h3>
           <div class="chip-row">
             <span class="chip">${project.bubble_count} bubbles</span>
             <span class="chip">${project.session_count} sessions</span>
-            <span class="chip">${escapeHtml(formatShort(project.last_seen_at))}</span>
           </div>
           <p class="card-text">${escapeHtml(project.latest_bubble_preview || "No bubble preview yet.")}</p>
           <div class="card-meta">${escapeHtml((project.branches || []).join(" · ") || "No branch context")}</div>
@@ -232,12 +237,15 @@ const renderProjectDetail = () => {
       ${sessions
         .map(
           (session) => `
-            <article class="card ${session.session_id === state.selectedSessionId ? "is-selected" : ""}" data-session-id="${session.session_id}">
+            <article class="card card-session ${session.session_id === state.selectedSessionId ? "is-selected" : ""}" data-session-id="${session.session_id}">
+              <div class="card-head">
+                <div class="card-meta">Session</div>
+                <div class="card-time">${escapeHtml(formatShort(session.started_at))}</div>
+              </div>
               <h3 class="card-title">${escapeHtml(session.project_label)}</h3>
               <div class="chip-row">
                 <span class="chip">${session.bubble_count} bubbles</span>
                 <span class="chip">${escapeHtml(session.git_branch || "No branch")}</span>
-                <span class="chip">${escapeHtml(formatShort(session.started_at))}</span>
               </div>
               <p class="card-text">${escapeHtml(session.latest_bubble_preview || "No preview yet.")}</p>
               <div class="card-meta">${escapeHtml(session.cwd || "No cwd recorded")}</div>
@@ -263,9 +271,12 @@ const renderSessions = () => {
   stack.innerHTML = sessions
     .map(
       (session) => `
-        <article class="card ${session.session_id === state.selectedSessionId ? "is-selected" : ""}" data-session-id="${session.session_id}">
-          <div class="card-meta">${escapeHtml(session.project_label)}</div>
-          <h3 class="card-title">${escapeHtml(formatDateTime(session.started_at))}</h3>
+        <article class="card card-session ${session.session_id === state.selectedSessionId ? "is-selected" : ""}" data-session-id="${session.session_id}">
+          <div class="card-head">
+            <div class="card-meta">${escapeHtml(session.project_label)}</div>
+            <div class="card-time">${escapeHtml(formatShort(session.started_at))}</div>
+          </div>
+          <h3 class="card-title">${escapeHtml(session.project_label)}</h3>
           <div class="chip-row">
             <span class="chip">${session.bubble_count} bubbles</span>
             <span class="chip">${escapeHtml(session.git_branch || "No branch")}</span>
