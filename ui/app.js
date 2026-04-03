@@ -122,7 +122,10 @@ const renderOverview = () => {
     <div class="overview-card"><strong>${overview.bubble_count}</strong><span class="muted">Bubbles</span></div>
     <div class="overview-card"><strong>${overview.session_count}</strong><span class="muted">Sessions</span></div>
     <div class="overview-card"><strong>${overview.project_count}</strong><span class="muted">Projects</span></div>
-    <div class="overview-card"><strong>${overview.mattered_count ?? 0}</strong><span class="muted">Mattered</span></div>
+    <button class="overview-card overview-card-button" data-view="mattered">
+      <strong>${overview.mattered_count ?? 0}</strong>
+      <span class="muted">Mattered</span>
+    </button>
   `;
   elements.generatedAt.textContent = `Updated ${formatShort(state.data.generated_at)}`;
 };
@@ -350,6 +353,20 @@ const renderSearch = () => {
   renderBubbleGroups(bubbles);
 };
 
+const renderMattered = () => {
+  const mattered = (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
+  if (!mattered.length) {
+    elements.mainContent.replaceChildren(
+      buildEmptyState(
+        "No mattered bubbles yet",
+        "Mark a bubble as mattered from the detail panel and it will appear here."
+      )
+    );
+    return;
+  }
+  renderBubbleGroups(mattered);
+};
+
 const renderDetail = () => {
   const bubble = bubbleById(state.selectedBubbleId);
   if (bubble) {
@@ -504,6 +521,7 @@ const renderMain = () => {
 
   const titles = {
     recent: ["Recent bubbles", "Recent"],
+    mattered: ["Bubbles you marked as mattered", "Mattered"],
     projects: ["Archive by project", "Projects"],
     sessions: ["Archive by session", "Sessions"],
     search: ["Search local history", "Search"],
@@ -514,6 +532,10 @@ const renderMain = () => {
 
   if (state.view === "recent") {
     renderBubbleGroups((state.data?.bubbles ?? []).slice(0, 120));
+    return;
+  }
+  if (state.view === "mattered") {
+    renderMattered();
     return;
   }
   if (state.view === "projects") {
@@ -615,6 +637,14 @@ document.addEventListener("click", (event) => {
   const backButton = event.target.closest("[data-back-to]");
   if (backButton) {
     setView(backButton.dataset.backTo);
+    return;
+  }
+
+  const viewButton = event.target.closest("[data-view]");
+  if (viewButton && viewButton.closest(".overview")) {
+    state.query = "";
+    elements.searchInput.value = "";
+    setView(viewButton.dataset.view);
     return;
   }
 

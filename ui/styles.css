@@ -187,6 +187,19 @@ input {
   padding: 13px 14px;
 }
 
+.overview-card-button {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.overview-card-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(49, 92, 122, 0.24);
+  background: var(--accent-soft);
+}
+
 .overview-card strong {
   display: block;
   font-size: 1.32rem;
