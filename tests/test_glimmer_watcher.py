@@ -117,6 +117,90 @@ class WatcherEventShapeTests(unittest.TestCase):
                 self.module.LOGFILE = original_logfile
                 self.module.EVENTSFILE = original_eventsfile
 
+    def test_scan_buffer_prefers_fuller_text_when_bubble_grows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logfile = Path(tmp) / "log.jsonl"
+            eventsfile = Path(tmp) / "events.jsonl"
+            watcherlog = Path(tmp) / "watcher.log"
+            original_logfile = self.module.LOGFILE
+            original_eventsfile = self.module.EVENTSFILE
+            original_watcherlog = self.module.WATCHERLOG
+            self.module.LOGFILE = logfile
+            self.module.EVENTSFILE = eventsfile
+            self.module.WATCHERLOG = watcherlog
+            try:
+                short_buf = (
+                    "╭────────────────────────────────────────╮\n"
+                    "│ Ah, the README's selling the dream.   │\n"
+                    "╰────────────────────────────────────────╯\n"
+                )
+                long_buf = (
+                    "╭──────────────────────────────────────────────╮\n"
+                    "│ Ah, the README's selling the dream.         │\n"
+                    "│ But the code is still asking for patterns.  │\n"
+                    "╰──────────────────────────────────────────────╯\n"
+                )
+
+                session_seen = set()
+                pending_bubbles = {}
+                session_ctx = {}
+                bubble_seq = 0
+
+                bubble_seq = self.module.scan_buffer(
+                    short_buf,
+                    session_seen,
+                    pending_bubbles,
+                    "Glimmer",
+                    session_ctx,
+                    bubble_seq,
+                )
+                self.assertEqual(bubble_seq, 0)
+                self.assertIn(
+                    "Ah, the README's selling the dream.",
+                    pending_bubbles,
+                )
+
+                bubble_seq = self.module.scan_buffer(
+                    long_buf,
+                    session_seen,
+                    pending_bubbles,
+                    "Glimmer",
+                    session_ctx,
+                    bubble_seq,
+                )
+                self.assertEqual(bubble_seq, 0)
+                self.assertNotIn(
+                    "Ah, the README's selling the dream.",
+                    pending_bubbles,
+                )
+                self.assertIn(
+                    "Ah, the README's selling the dream. But the code is still asking for patterns.",
+                    pending_bubbles,
+                )
+
+                bubble_seq = self.module.scan_buffer(
+                    long_buf,
+                    session_seen,
+                    pending_bubbles,
+                    "Glimmer",
+                    session_ctx,
+                    bubble_seq,
+                )
+                self.assertEqual(bubble_seq, 1)
+
+                logged_legacy = json.loads(logfile.read_text(encoding="utf-8").strip())
+                logged_event = json.loads(eventsfile.read_text(encoding="utf-8").strip())
+                expected_text = (
+                    "Ah, the README's selling the dream. "
+                    "But the code is still asking for patterns."
+                )
+                self.assertEqual(logged_legacy["text"], expected_text)
+                self.assertEqual(logged_event["text"], expected_text)
+            finally:
+                self.module.LOGFILE = original_logfile
+                self.module.EVENTSFILE = original_eventsfile
+                self.module.WATCHERLOG = original_watcherlog
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,6 +119,27 @@ def line_spans(text: str) -> list[dict]:
     return spans
 
 
+def find_related_pending_text(
+    pending_bubbles: dict[str, dict],
+    bubble_text: str,
+) -> str | None:
+    """Find a pending bubble that looks like an earlier/later version of the
+    same text.
+
+    Claude often paints bubble text incrementally. If a later scan produces a
+    longer version with the earlier text as a prefix, treat it as the same
+    bubble and prefer the longer variant.
+    """
+    related = [
+        pending_text
+        for pending_text in pending_bubbles
+        if bubble_text.startswith(pending_text) or pending_text.startswith(bubble_text)
+    ]
+    if not related:
+        return None
+    return max(related, key=len)
+
+
 def extract_bubble_candidates(text: str) -> list[dict]:
     """Find speech bubbles and keep source offsets for trigger attribution."""
     lines = line_spans(text)
@@ -333,9 +354,31 @@ def scan_buffer(
         if bubble_text in session_seen:
             continue
 
-        current_candidates.add(bubble_text)
         trigger_ctx = classify_trigger(cleaned, bubble)
         state = pending_bubbles.get(bubble_text)
+        if state is None:
+            related_text = find_related_pending_text(pending_bubbles, bubble_text)
+            if related_text and related_text != bubble_text:
+                related_state = pending_bubbles.pop(related_text)
+                if bubble_text.startswith(related_text):
+                    # The same bubble grew between scans. Prefer the fuller text
+                    # and wait for that longer version to stabilize.
+                    pending_bubbles[bubble_text] = {
+                        "stable_scans": 1,
+                        "trigger_ctx": trigger_ctx,
+                    }
+                    current_candidates.add(bubble_text)
+                    if not final_pass:
+                        continue
+                    state = pending_bubbles[bubble_text]
+                else:
+                    # A shorter redraw should not displace the longest pending
+                    # version we have already seen.
+                    pending_bubbles[related_text] = related_state
+                    current_candidates.add(related_text)
+                    continue
+
+        current_candidates.add(bubble_text)
         if state is None:
             pending_bubbles[bubble_text] = {
                 "stable_scans": 1,
