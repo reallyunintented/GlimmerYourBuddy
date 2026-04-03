@@ -14,6 +14,7 @@ When you use Claude Code with Glimmer enabled, it:
 - **Logs** them instantly with timestamps
 - **Keeps the terminal clean** by writing watcher debug output to a separate file
 - **Groups** auto-captured bubbles by Claude session
+- **Stores exact session context** like cwd, project name, repo root, and branch
 - **Tags** exact `/buddy pet` reactions and best-effort post-prompt bubbles
 - **Lets you view** them anytime with a simple command
 
@@ -65,6 +66,12 @@ glimmer-log --sessions
 
 # Open the newest session
 glimmer-log --session latest
+
+# Filter session-aware runs by exact context
+glimmer-log --project GlimmerYourBuddy
+glimmer-log --branch main
+glimmer-log --cwd ~/src/GlimmerYourBuddy
+glimmer-log --repo-root-only
 
 # Get stats
 glimmer-log --stats
@@ -118,6 +125,11 @@ It stores session metadata and trigger tagging without polluting `log.jsonl`:
   "text": "Your buddy said something witty here",
   "source": "auto",
   "session_id": "20260403-142215-12345",
+  "cwd": "/home/user/src/GlimmerYourBuddy",
+  "project_root": "/home/user/src/GlimmerYourBuddy",
+  "project_name": "GlimmerYourBuddy",
+  "git_branch": "main",
+  "is_repo_root": true,
   "bubble_seq": 4,
   "trigger_type": "buddy_pet",
   "trigger_confidence": "exact",
@@ -136,6 +148,11 @@ This directory holds one manifest per Claude run:
   "ended_at": "2026-04-03T14:30:02+00:00",
   "companion": "Glimmer",
   "raw_path": "/home/user/.claude/glimmer/raw/session-20260403-142215-12345.raw",
+  "cwd": "/home/user/src/GlimmerYourBuddy",
+  "project_root": "/home/user/src/GlimmerYourBuddy",
+  "project_name": "GlimmerYourBuddy",
+  "git_branch": "main",
+  "is_repo_root": true,
   "argv": ["claude"]
 }
 ```
@@ -173,6 +190,12 @@ watcher.log    watcher debug output
 - **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, and writes logs.
 - **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for.
 
+Session context is separate from trigger attribution:
+
+- project and directory fields are session facts
+- `buddy_pet`, `post_prompt`, and `unknown` stay trigger fields
+- Glimmer does not try to guess vague categories like "personal vs work"
+
 ### Trigger Tagging
 For auto-captured entries, Glimmer also stores trigger metadata in `events.jsonl`:
 
@@ -207,6 +230,11 @@ Companion: Glimmer
 Started: 2026-04-03 14:22
 Ended: 2026-04-03 14:30
 Bubbles: 3
+Project: GlimmerYourBuddy
+Branch: main
+CWD: /home/user/src/GlimmerYourBuddy
+Repo root: /home/user/src/GlimmerYourBuddy
+At repo root: yes
 
   2026-04-03 14:22  Glimmer  #1
   "You're overthinking this. Just ship it."
@@ -223,8 +251,10 @@ Bubbles: 3
 $ glimmer-log --sessions
 2026-04-03 14:22  20260403-142215-12345  latest
   Glimmer  3 bubbles  ended 2026-04-03 14:30
-
-Legacy entries without session metadata: 42
+  project=GlimmerYourBuddy  branch=main  cwd=.
+2026-04-03 09:05  20260403-090500-99887
+  Glimmer  1 bubbles  ended 2026-04-03 09:06
+  project=notes  branch=-  cwd=/home/user
 ```
 
 ### Get stats on what your buddy says

@@ -24,6 +24,8 @@ The runtime is split on purpose:
 
 - `glimmer-claude`
   Starts Claude inside `script`, creates the session id, writes the session manifest, and launches the watcher.
+- `glimmer-session.py`
+  Detects exact repo context for the session manifest and finalizes manifests on exit.
 - `glimmer-watcher.py`
   Parses the raw terminal recording, extracts stable speech-bubble text, writes plain entries to `log.jsonl`, and writes richer auto-capture metadata to `events.jsonl`.
 - `glimmer-log`
@@ -34,7 +36,7 @@ Important storage paths:
 - `~/.claude/glimmer/log.jsonl`
   Plain compatibility log. Keep this shape stable.
 - `~/.claude/glimmer/events.jsonl`
-  Auto-capture sidecar metadata. Session ids and trigger tags belong here.
+  Auto-capture sidecar metadata. Session ids, exact repo context, and trigger tags belong here.
 - `~/.claude/glimmer/sessions/`
   One manifest per run.
 - `~/.claude/glimmer/raw/`
@@ -48,7 +50,7 @@ This is the internal flow:
 
 1. `glimmer-claude` creates a session id.
 2. It starts `script` and writes raw terminal output to `~/.claude/glimmer/raw/`.
-3. It writes a session manifest to `~/.claude/glimmer/sessions/`.
+3. It detects exact repo context from the launch cwd and writes a session manifest to `~/.claude/glimmer/sessions/`.
 4. It starts `glimmer-watcher.py` in the background.
 5. The watcher tails the raw file, strips ANSI control sequences, and preserves cursor-based spacing used by Claude's UI.
 6. The watcher looks for rounded speech-bubble boxes and extracts their visible text.
@@ -60,8 +62,43 @@ This is the internal flow:
 Why the split exists:
 
 - `log.jsonl` must stay stable and simple for compatibility.
-- `events.jsonl` can evolve to hold session ids, trigger metadata, and future sidecar fields.
+- `events.jsonl` can evolve to hold session ids, exact repo context, trigger metadata, and future sidecar fields.
 - watcher debug output belongs in `watcher.log`, not on the shared fullscreen Claude terminal.
+
+## Manifest Schema
+
+Each session manifest stores:
+
+- `session_id`
+- `started_at`
+- `ended_at`
+- `companion`
+- `raw_path`
+- `argv`
+- `cwd`
+- `project_root`
+- `project_name`
+- `git_branch`
+- `is_repo_root`
+
+`events.jsonl` copies the same session context fields into each auto-captured event. `log.jsonl` must not grow these fields.
+
+## Repo Context Rules
+
+Repo context is exact and intentionally limited:
+
+- `cwd`
+  The launch directory from shell `pwd`.
+- `project_root`
+  `git rev-parse --show-toplevel` when inside a repo, else `null`.
+- `project_name`
+  `basename(project_root)` when inside a repo, else `basename(cwd)`.
+- `git_branch`
+  `git rev-parse --abbrev-ref HEAD` when inside a repo. Detached HEAD is reported as `HEAD`.
+- `is_repo_root`
+  Exact string comparison: `cwd == project_root`.
+
+Do not add inferred categories like "random question", "personal vs work", or "unrelated to project". Those require prompt capture or guesswork, which Glimmer avoids.
 
 ## Trigger Attribution
 
@@ -76,6 +113,8 @@ Auto-captured events can include:
 
 These tags belong in `events.jsonl`, not in `log.jsonl`.
 
+Trigger attribution is separate from project context. Do not collapse them into a single reason field.
+
 ## Code Style
 
 - Shell scripts: keep it simple and portable (bash 4+)
@@ -84,7 +123,26 @@ These tags belong in `events.jsonl`, not in `log.jsonl`.
 
 ## Testing
 
-The trickiest part is testing the bubble detection. You can manually trigger it:
+Automated coverage lives under `tests/` and should cover:
+
+- manifest context detection inside a repo root
+- manifest context detection inside a repo subdirectory
+- manifest context detection outside any repo
+- detached HEAD reporting
+- watcher event shape, including exact session context copy-through
+- `glimmer-log --sessions`
+- `glimmer-log --session latest`
+- `glimmer-log --project`
+- `glimmer-log --branch`
+- `glimmer-log --cwd`
+
+Run the automated suite with:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Manual QA still matters for the parser and fullscreen UI. You can trigger it with:
 
 ```bash
 # Run a real session:
@@ -102,10 +160,20 @@ When changing parser behavior, check all of these:
 
 - the live terminal stays readable and the watcher does not print across Claude's fullscreen UI
 - `log.jsonl` remains plain and backward compatible
-- `events.jsonl` keeps session and trigger metadata
-- the latest session manifest gets both `started_at` and `ended_at`
+- `events.jsonl` keeps session, exact repo context, and trigger metadata
+- the latest session manifest gets both `started_at` and `ended_at` plus correct repo context
 - a large or slowly painted bubble is not saved too early
 - the watcher still performs a final scan on shutdown
+- session headers and `glimmer-log` filters match the real cwd, repo root, project name, and branch
+
+Recommended manual flows:
+
+- launch from a repo root
+- launch from a nested repo subdirectory
+- launch from a home directory outside a repo
+- trigger `/buddy pet`
+- ask a normal coding question
+- verify `glimmer-log --sessions`, `glimmer-log --session latest`, and context filters against what actually happened
 
 If you need live watcher output for debugging, use:
 

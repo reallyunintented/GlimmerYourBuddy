@@ -7,6 +7,7 @@
 #   glimmer-log -n 10            Show last 10 bubbles
 #   glimmer-log --session latest Show newest session from events.jsonl
 #   glimmer-log --sessions       List known sessions
+#   glimmer-log --project NAME   List matching sessions
 #   glimmer-log --json           Raw legacy JSONL output
 #   glimmer-log --stats          Show legacy log statistics
 #   glimmer-log --add "text"     Manually add a bubble
@@ -93,9 +94,14 @@ PY
 
 view_sessions() {
     local session_ref="${1:-}"
-    python3 - "$EVENTSFILE" "$SESSIONS_DIR" "$session_ref" <<'PY'
+    local project_filter="${2:-}"
+    local branch_filter="${3:-}"
+    local cwd_filter="${4:-}"
+    local repo_root_only="${5:-0}"
+    python3 - "$EVENTSFILE" "$SESSIONS_DIR" "$session_ref" "$project_filter" "$branch_filter" "$cwd_filter" "$repo_root_only" <<'PY'
 from collections import defaultdict
 from datetime import datetime
+import os
 from pathlib import Path
 import json
 import sys
@@ -103,6 +109,10 @@ import sys
 eventsfile = Path(sys.argv[1])
 sessions_dir = Path(sys.argv[2])
 session_ref = sys.argv[3] or None
+project_filter = sys.argv[4] or None
+branch_filter = sys.argv[5] or None
+cwd_filter = sys.argv[6] or None
+repo_root_only = sys.argv[7] == "1"
 
 
 def parse_ts(value: str | None):
@@ -119,6 +129,59 @@ def format_ts(value: str | None, fallback: str = "") -> str:
     if dt is None:
         return fallback or (value or "")
     return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def normalize_filter_path(value: str | None) -> str | None:
+    if not value:
+        return None
+    expanded = os.path.expanduser(value)
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    return os.path.normpath(os.path.join(os.getcwd(), expanded))
+
+
+def abbreviate_path(value: str | None) -> str:
+    if not value:
+        return "-"
+    home = str(Path.home())
+    if value == home:
+        return "~"
+    if value.startswith(home + os.sep):
+        return "~/" + value[len(home + os.sep):]
+    return value
+
+
+def cwd_summary(cwd: str | None, project_root: str | None) -> str:
+    if not cwd:
+        return "-"
+    if project_root:
+        try:
+            relative = Path(cwd).relative_to(Path(project_root))
+            return "." if str(relative) == "." else str(relative)
+        except ValueError:
+            pass
+    return abbreviate_path(cwd)
+
+
+def first_entry(entries: list[dict]) -> dict:
+    return entries[0] if entries else {}
+
+
+def get_field(manifest: dict, entries: list[dict], key: str):
+    if key in manifest:
+        return manifest.get(key)
+    return first_entry(entries).get(key)
+
+
+def session_sort_key(record: dict):
+    started = parse_ts(record.get("started_at"))
+    if started is not None:
+        return started
+    matching = [parse_ts(entry.get("timestamp")) for entry in record.get("entries", [])]
+    matching = [dt for dt in matching if dt is not None]
+    if matching:
+        return max(matching)
+    return datetime.min
 
 
 events = []
@@ -148,79 +211,89 @@ if sessions_dir.exists():
 
 session_ids = set(entries_by_session)
 session_ids.update(manifests)
+records = []
+for current_session_id in session_ids:
+    manifest = manifests.get(current_session_id, {})
+    entries = entries_by_session.get(current_session_id, [])
+    record = {
+        "session_id": current_session_id,
+        "entries": entries,
+        "started_at": get_field(manifest, entries, "started_at") or (
+            first_entry(entries).get("timestamp") if entries else ""
+        ),
+        "ended_at": get_field(manifest, entries, "ended_at"),
+        "companion": get_field(manifest, entries, "companion") or "Glimmer",
+        "raw_path": get_field(manifest, entries, "raw_path"),
+        "cwd": get_field(manifest, entries, "cwd"),
+        "project_root": get_field(manifest, entries, "project_root"),
+        "project_name": get_field(manifest, entries, "project_name"),
+        "git_branch": get_field(manifest, entries, "git_branch"),
+        "is_repo_root": bool(get_field(manifest, entries, "is_repo_root")),
+    }
+    records.append(record)
 
-if not session_ref:
-    if not session_ids:
+normalized_cwd_filter = normalize_filter_path(cwd_filter)
+filtered_records = []
+for record in records:
+    if project_filter is not None and record.get("project_name") != project_filter:
+        continue
+    if branch_filter is not None and record.get("git_branch") != branch_filter:
+        continue
+    if normalized_cwd_filter is not None:
+        record_cwd = record.get("cwd")
+        if not record_cwd or os.path.normpath(record_cwd) != normalized_cwd_filter:
+            continue
+    if repo_root_only and not record.get("is_repo_root"):
+        continue
+    filtered_records.append(record)
+
+if not filtered_records:
+    if session_ids:
+        print("No session-aware entries matched the requested filters.")
+    else:
         print("No session-aware entries yet.")
-        sys.exit(0)
-
-    def sort_key(session_id: str):
-        manifest = manifests.get(session_id, {})
-        started = parse_ts(manifest.get("started_at"))
-        if started is not None:
-            return started
-        matching = [parse_ts(entry.get("timestamp")) for entry in entries_by_session.get(session_id, [])]
-        matching = [dt for dt in matching if dt is not None]
-        if matching:
-            return max(matching)
-        return datetime.min
-
-    sorted_ids = sorted(session_ids, key=sort_key, reverse=True)
-    latest_id = sorted_ids[0]
-    for session_id in sorted_ids:
-        manifest = manifests.get(session_id, {})
-        session_entries = entries_by_session.get(session_id, [])
-        started_at = manifest.get("started_at") or (
-            session_entries[0].get("timestamp") if session_entries else ""
-        )
-        ended_at = manifest.get("ended_at")
-        companion = manifest.get("companion") or (
-            session_entries[0].get("companion", "Glimmer") if session_entries else "Glimmer"
-        )
-        latest_mark = "  latest" if session_id == latest_id else ""
-        state = "open" if not ended_at else f"ended {format_ts(ended_at)}"
-        print(f"{format_ts(started_at, session_id)}  {session_id}{latest_mark}")
-        print(f"  {companion}  {len(session_entries)} bubbles  {state}")
     sys.exit(0)
 
-if not session_ids:
-    print("No session-aware entries yet.")
+sorted_records = sorted(filtered_records, key=session_sort_key, reverse=True)
+
+if not session_ref:
+    latest_id = sorted_records[0]["session_id"]
+    for record in sorted_records:
+        latest_mark = "  latest" if record["session_id"] == latest_id else ""
+        ended_at = record.get("ended_at")
+        state = "open" if not ended_at else f"ended {format_ts(ended_at)}"
+        print(f'{format_ts(record.get("started_at"), record["session_id"])}  {record["session_id"]}{latest_mark}')
+        print(f'  {record.get("companion", "Glimmer")}  {len(record.get("entries", []))} bubbles  {state}')
+        print(
+            f'  project={record.get("project_name") or "-"}  '
+            f'branch={record.get("git_branch") or "-"}  '
+            f'cwd={cwd_summary(record.get("cwd"), record.get("project_root"))}'
+        )
     sys.exit(0)
 
 if session_ref == "latest":
-    def sort_key(session_id: str):
-        manifest = manifests.get(session_id, {})
-        started = parse_ts(manifest.get("started_at"))
-        if started is not None:
-            return started
-        matching = [parse_ts(entry.get("timestamp")) for entry in entries_by_session.get(session_id, [])]
-        matching = [dt for dt in matching if dt is not None]
-        if matching:
-            return max(matching)
-        return datetime.min
-
-    session_id = max(session_ids, key=sort_key)
+    record = sorted_records[0]
 else:
-    session_id = session_ref
+    matching = [item for item in filtered_records if item["session_id"] == session_ref]
+    if not matching:
+        print(f"Session not found: {session_ref}", file=sys.stderr)
+        sys.exit(1)
+    record = matching[0]
 
-if session_id not in session_ids:
-    print(f"Session not found: {session_ref}", file=sys.stderr)
-    sys.exit(1)
+entries = record.get("entries", [])
 
-manifest = manifests.get(session_id, {})
-entries = entries_by_session.get(session_id, [])
-started_at = manifest.get("started_at") or (entries[0].get("timestamp") if entries else "")
-ended_at = manifest.get("ended_at")
-companion = manifest.get("companion") or (entries[0].get("companion") if entries else "Glimmer")
-raw_path = manifest.get("raw_path") or (entries[0].get("raw_path") if entries else "")
-
-print(f"Session: {session_id}")
-print(f"Companion: {companion}")
-print(f"Started: {format_ts(started_at, 'unknown')}")
-print(f"Ended: {format_ts(ended_at, 'open') if ended_at else 'open'}")
-print(f"Bubbles: {len(entries)}")
-if raw_path:
-    print(f"Raw: {raw_path}")
+print(f'Session: {record["session_id"]}')
+print(f'Companion: {record.get("companion", "Glimmer")}')
+print(f'Started: {format_ts(record.get("started_at"), "unknown")}')
+print(f'Ended: {format_ts(record.get("ended_at"), "open") if record.get("ended_at") else "open"}')
+print(f'Bubbles: {len(entries)}')
+print(f'Project: {record.get("project_name") or "-"}')
+print(f'Branch: {record.get("git_branch") or "-"}')
+print(f'CWD: {record.get("cwd") or "-"}')
+print(f'Repo root: {record.get("project_root") or "-"}')
+print(f'At repo root: {"yes" if record.get("is_repo_root") else "no"}')
+if record.get("raw_path"):
+    print(f'Raw: {record.get("raw_path")}')
 print()
 
 for entry in entries:
@@ -266,6 +339,10 @@ show_help() {
     echo "  --session ID      Show bubbles from a specific session"
     echo "  --session latest  Show the newest session"
     echo "  --sessions        List known sessions"
+    echo "  --project NAME    Filter session views by exact project name"
+    echo "  --branch NAME     Filter session views by exact git branch"
+    echo "  --cwd PATH        Filter session views by exact cwd"
+    echo "  --repo-root-only  Filter session views to repo-root sessions"
     echo "  --add \"text\"      Manually add a bubble"
     echo "  --json            Raw legacy JSONL output"
     echo "  --stats           Show legacy log statistics"
@@ -275,6 +352,10 @@ show_help() {
 MODE="pretty"
 LIMIT=0
 SESSION_REF=""
+PROJECT_FILTER=""
+BRANCH_FILTER=""
+CWD_FILTER=""
+REPO_ROOT_ONLY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -297,6 +378,34 @@ while [ $# -gt 0 ]; do
             fi
             SESSION_REF="$2"
             shift 2
+            ;;
+        --project)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --project <name>" >&2
+                exit 1
+            fi
+            PROJECT_FILTER="$2"
+            shift 2
+            ;;
+        --branch)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --branch <name>" >&2
+                exit 1
+            fi
+            BRANCH_FILTER="$2"
+            shift 2
+            ;;
+        --cwd)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --cwd <path>" >&2
+                exit 1
+            fi
+            CWD_FILTER="$2"
+            shift 2
+            ;;
+        --repo-root-only)
+            REPO_ROOT_ONLY=1
+            shift
             ;;
         -n)
             if ! [[ "${2:-}" =~ ^[0-9]+$ ]]; then
@@ -327,8 +436,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ -n "$PROJECT_FILTER" ] || [ -n "$BRANCH_FILTER" ] || [ -n "$CWD_FILTER" ] || [ "$REPO_ROOT_ONLY" -eq 1 ]; then
+    MODE="sessions"
+fi
+
 if [ -n "$SESSION_REF" ] || [ "$MODE" = "sessions" ]; then
-    view_sessions "$SESSION_REF"
+    view_sessions "$SESSION_REF" "$PROJECT_FILTER" "$BRANCH_FILTER" "$CWD_FILTER" "$REPO_ROOT_ONLY"
     exit 0
 fi
 

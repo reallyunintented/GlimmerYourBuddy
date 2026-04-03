@@ -16,6 +16,7 @@ RAW_DIR="$GLIMMER_DIR/raw"
 SESSIONS_DIR="$GLIMMER_DIR/sessions"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER="${GLIMMER_WATCHER:-}"
+SESSION_HELPER="${GLIMMER_SESSION_HELPER:-}"
 
 if [ -z "$WATCHER" ]; then
     if command -v glimmer-watcher.py >/dev/null 2>&1; then
@@ -24,6 +25,16 @@ if [ -z "$WATCHER" ]; then
         WATCHER="$SCRIPT_DIR/glimmer-watcher.py"
     else
         WATCHER="$HOME/.local/bin/glimmer-watcher.py"
+    fi
+fi
+
+if [ -z "$SESSION_HELPER" ]; then
+    if command -v glimmer-session.py >/dev/null 2>&1; then
+        SESSION_HELPER="$(command -v glimmer-session.py)"
+    elif [ -x "$SCRIPT_DIR/glimmer-session.py" ]; then
+        SESSION_HELPER="$SCRIPT_DIR/glimmer-session.py"
+    else
+        SESSION_HELPER="$HOME/.local/bin/glimmer-session.py"
     fi
 fi
 
@@ -43,6 +54,12 @@ if [ ! -x "$WATCHER" ]; then
     exit 1
 fi
 
+if [ ! -x "$SESSION_HELPER" ]; then
+    echo "Error: could not find glimmer-session.py." >&2
+    echo "Install Glimmer first or set GLIMMER_SESSION_HELPER to its path." >&2
+    exit 1
+fi
+
 mkdir -p "$RAW_DIR" "$SESSIONS_DIR"
 
 # Get companion name from config
@@ -59,67 +76,25 @@ SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
 TYPESCRIPT="$RAW_DIR/session-${SESSION_ID}.raw"
 MANIFEST_PATH="$SESSIONS_DIR/${SESSION_ID}.json"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+PWD_VALUE="${PWD:-$(pwd)}"
 WATCHER_PID=""
 CLAUDE_ARGS=( "$@" )
 
 write_session_manifest() {
-    python3 - "$MANIFEST_PATH" "$SESSION_ID" "$STARTED_AT" "$COMPANION_NAME" "$TYPESCRIPT" "${CLAUDE_ARGS[@]}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest_path = Path(sys.argv[1])
-session_id = sys.argv[2]
-started_at = sys.argv[3]
-companion = sys.argv[4]
-raw_path = sys.argv[5]
-argv = ["claude", *sys.argv[6:]]
-
-manifest = {
-    "session_id": session_id,
-    "started_at": started_at,
-    "ended_at": None,
-    "companion": companion,
-    "raw_path": raw_path,
-    "argv": argv,
-}
-manifest_path.write_text(
-    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
-PY
+    python3 "$SESSION_HELPER" manifest "$MANIFEST_PATH" "$SESSION_ID" "$STARTED_AT" "$COMPANION_NAME" "$TYPESCRIPT" "$PWD_VALUE" "${CLAUDE_ARGS[@]}"
 }
 
 finalize_session_manifest() {
     local ended_at="$1"
-    python3 - "$MANIFEST_PATH" "$SESSION_ID" "$ended_at" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest_path = Path(sys.argv[1])
-session_id = sys.argv[2]
-ended_at = sys.argv[3]
-
-manifest = {}
-if manifest_path.exists():
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        manifest = {}
-
-manifest["session_id"] = manifest.get("session_id", session_id)
-manifest["ended_at"] = ended_at
-manifest_path.write_text(
-    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
-PY
+    python3 "$SESSION_HELPER" finalize "$MANIFEST_PATH" "$SESSION_ID" "$ended_at"
 }
 
 cleanup() {
     local exit_code=$?
     local ended_at
+
+    # Finish manifest + watcher shutdown even if the user presses Ctrl-C again.
+    trap '' INT TERM
 
     ended_at="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
     finalize_session_manifest "$ended_at"

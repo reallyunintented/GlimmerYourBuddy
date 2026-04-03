@@ -53,6 +53,18 @@ MID_RE = re.compile(r"│(.+?)│")
 STOP_REQUESTED = False
 BUBBLE_CONTEXT_BEFORE = 4000
 BUBBLE_CONTEXT_AFTER = 1500
+SESSION_CONTEXT_KEYS = (
+    "session_id",
+    "raw_path",
+    "companion",
+    "started_at",
+    "ended_at",
+    "cwd",
+    "project_root",
+    "project_name",
+    "git_branch",
+    "is_repo_root",
+)
 
 
 def debug(message: str) -> None:
@@ -243,10 +255,9 @@ def load_session_context(
     if not isinstance(manifest, dict):
         return context
 
-    for key in ("session_id", "raw_path", "companion", "started_at", "ended_at"):
-        value = manifest.get(key)
-        if value:
-            context[key] = value
+    for key in SESSION_CONTEXT_KEYS:
+        if key in manifest:
+            context[key] = manifest.get(key)
     return context
 
 
@@ -269,13 +280,17 @@ def build_entry(
         "text": text,
         "source": "auto",
         "bubble_seq": bubble_seq,
+        "session_id": session_ctx.get("session_id"),
+        "cwd": session_ctx.get("cwd"),
+        "project_root": session_ctx.get("project_root"),
+        "project_name": session_ctx.get("project_name"),
+        "git_branch": session_ctx.get("git_branch"),
+        "is_repo_root": session_ctx.get("is_repo_root"),
         "trigger_type": trigger_ctx.get("trigger_type", "unknown"),
         "trigger_confidence": trigger_ctx.get("trigger_confidence", "none"),
     }
-    if session_ctx.get("session_id"):
-        entry["session_id"] = session_ctx["session_id"]
-    if session_ctx.get("raw_path"):
-        entry["raw_path"] = session_ctx["raw_path"]
+    if "raw_path" in session_ctx:
+        entry["raw_path"] = session_ctx.get("raw_path")
     if trigger_ctx.get("trigger_text"):
         entry["trigger_text"] = trigger_ctx["trigger_text"]
     return entry

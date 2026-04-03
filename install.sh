@@ -8,7 +8,7 @@ set -euo pipefail
 BIN_DIR="${HOME}/.local/bin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="${GLIMMER_BASE_URL:-https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/main}"
-SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py)
+SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py glimmer-session.py)
 
 fetch_script() {
     local script="$1"
