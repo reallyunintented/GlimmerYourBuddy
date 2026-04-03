@@ -15,9 +15,16 @@ from collections import defaultdict
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 MATTERS_FILE = "mattered.json"
+DEFAULT_REVIEW_STATE = "unreviewed"
+REVIEW_STATES = (
+    DEFAULT_REVIEW_STATE,
+    "open",
+    "used",
+    "stale",
+)
 
 DEFAULT_GLIMMER_DIR = Path(
     os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer")
@@ -90,12 +97,22 @@ def load_matters(path: Path) -> dict[str, dict]:
     for bubble_id, value in parsed.items():
         if not isinstance(bubble_id, str) or not isinstance(value, dict):
             continue
-        matters[bubble_id] = {
-            "note": str(value.get("note") or "").strip(),
-            "marked_at": value.get("marked_at"),
-            "updated_at": value.get("updated_at"),
-        }
+        matters[bubble_id] = normalize_matter(value)
     return matters
+
+
+def normalize_matter(value: dict | None) -> dict:
+    value = value if isinstance(value, dict) else {}
+    review_state = str(value.get("review_state") or DEFAULT_REVIEW_STATE)
+    if review_state not in REVIEW_STATES:
+        review_state = DEFAULT_REVIEW_STATE
+    return {
+        "note": str(value.get("note") or "").strip(),
+        "marked_at": value.get("marked_at"),
+        "updated_at": value.get("updated_at"),
+        "review_state": review_state,
+        "reviewed_at": value.get("reviewed_at"),
+    }
 
 
 def save_matters(path: Path, matters: dict[str, dict]) -> None:
@@ -141,6 +158,8 @@ def normalize_bubble(entry: dict, source: str) -> dict:
     normalized["matter_note"] = ""
     normalized["mattered_at"] = None
     normalized["matter_updated_at"] = None
+    normalized["review_state"] = None
+    normalized["reviewed_at"] = None
     return normalized
 
 
@@ -198,6 +217,174 @@ def apply_matters(bubbles: list[dict], matters: dict[str, dict]) -> None:
         bubble["matter_note"] = matter.get("note") or ""
         bubble["mattered_at"] = matter.get("marked_at")
         bubble["matter_updated_at"] = matter.get("updated_at")
+        bubble["review_state"] = matter.get("review_state") or DEFAULT_REVIEW_STATE
+        bubble["reviewed_at"] = matter.get("reviewed_at")
+
+
+def upsert_matter(
+    matters: dict[str, dict],
+    bubble_id: str,
+    *,
+    marked: bool,
+    note: str,
+    now: str | None = None,
+) -> dict | None:
+    if not marked:
+        matters.pop(bubble_id, None)
+        return None
+
+    timestamp = now or datetime.now().isoformat()
+    existing = normalize_matter(matters.get(bubble_id))
+    matter = {
+        "note": note.strip(),
+        "marked_at": existing.get("marked_at") or timestamp,
+        "updated_at": timestamp,
+        "review_state": existing.get("review_state") or DEFAULT_REVIEW_STATE,
+        "reviewed_at": existing.get("reviewed_at"),
+    }
+    matters[bubble_id] = matter
+    return matter
+
+
+def update_review_state(
+    matters: dict[str, dict],
+    bubble_id: str,
+    review_state: str,
+    *,
+    now: str | None = None,
+) -> dict:
+    if review_state not in REVIEW_STATES:
+        raise ValueError(f"review_state must be one of: {', '.join(REVIEW_STATES)}")
+
+    matter = matters.get(bubble_id)
+    if matter is None:
+        raise KeyError(bubble_id)
+
+    timestamp = now or datetime.now().isoformat()
+    normalized = normalize_matter(matter)
+    normalized["review_state"] = review_state
+    normalized["reviewed_at"] = (
+        None if review_state == DEFAULT_REVIEW_STATE else timestamp
+    )
+    normalized["updated_at"] = timestamp
+    matters[bubble_id] = normalized
+    return normalized
+
+
+def mattered_sort_key(bubble: dict) -> tuple[tuple[int, str], tuple[int, str], str]:
+    return (
+        timestamp_sort_key(bubble.get("mattered_at")),
+        timestamp_sort_key(bubble.get("timestamp")),
+        bubble.get("id", ""),
+    )
+
+
+def build_mattered_view(index: dict) -> dict:
+    mattered_bubbles = sorted(
+        [bubble for bubble in index["bubbles"] if bubble.get("mattered")],
+        key=mattered_sort_key,
+        reverse=True,
+    )
+    counts = {"mattered": len(mattered_bubbles)}
+    for review_state in REVIEW_STATES:
+        counts[review_state] = sum(
+            1
+            for bubble in mattered_bubbles
+            if bubble.get("review_state") == review_state
+        )
+    return {
+        "generated_at": index["generated_at"],
+        "count": len(mattered_bubbles),
+        "counts": counts,
+        "bubbles": mattered_bubbles,
+    }
+
+
+def build_review_view(index: dict) -> dict:
+    mattered = build_mattered_view(index)["bubbles"]
+    groups = {}
+    for review_state in REVIEW_STATES:
+        groups[review_state] = [
+            bubble for bubble in mattered if bubble.get("review_state") == review_state
+        ]
+    return {
+        "generated_at": index["generated_at"],
+        "counts": {
+            "mattered": len(mattered),
+            **{review_state: len(groups[review_state]) for review_state in REVIEW_STATES},
+        },
+        "groups": groups,
+    }
+
+
+def build_search_view(index: dict, query: str, mattered_only: bool = False) -> dict:
+    needle = query.strip().casefold()
+    if not needle:
+        return {
+            "generated_at": index["generated_at"],
+            "query": query,
+            "count": 0,
+            "bubbles": [],
+        }
+
+    bubbles = index["bubbles"]
+    if mattered_only:
+        bubbles = [bubble for bubble in bubbles if bubble.get("mattered")]
+
+    matches = []
+    for bubble in bubbles:
+        haystack = " ".join(
+            str(part or "")
+            for part in (
+                bubble.get("text"),
+                bubble.get("matter_note"),
+                bubble.get("project_name"),
+                bubble.get("git_branch"),
+                bubble.get("companion"),
+                bubble.get("trigger_type"),
+            )
+        ).casefold()
+        if needle in haystack:
+            matches.append(bubble)
+
+    return {
+        "generated_at": index["generated_at"],
+        "query": query,
+        "count": len(matches),
+        "bubbles": matches,
+    }
+
+
+def build_bubble_view(index: dict, bubble_id: str) -> dict | None:
+    bubble = next(
+        (candidate for candidate in index["bubbles"] if candidate.get("id") == bubble_id),
+        None,
+    )
+    if bubble is None:
+        return None
+
+    session = next(
+        (
+            candidate
+            for candidate in index["sessions"]
+            if candidate.get("session_id") == bubble.get("session_id")
+        ),
+        None,
+    )
+    project = next(
+        (
+            candidate
+            for candidate in index["projects"]
+            if candidate.get("project_key") == (bubble.get("project_name") or "No Project")
+        ),
+        None,
+    )
+    return {
+        "generated_at": index["generated_at"],
+        "bubble": bubble,
+        "session": session,
+        "project": project,
+    }
 
 
 def build_sessions(events: list[dict], manifests: dict[str, dict], matters: dict[str, dict]) -> list[dict]:
@@ -403,6 +590,34 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             self.send_json(build_index(self.config["glimmer_dir"]))
             return
 
+        if parsed.path == "/api/mattered":
+            index = build_index(self.config["glimmer_dir"])
+            self.send_json(build_mattered_view(index))
+            return
+
+        if parsed.path == "/api/review":
+            index = build_index(self.config["glimmer_dir"])
+            self.send_json(build_review_view(index))
+            return
+
+        if parsed.path == "/api/search":
+            index = build_index(self.config["glimmer_dir"])
+            params = parse_qs(parsed.query)
+            query = (params.get("q") or [""])[0]
+            mattered_only = (params.get("mattered_only") or ["0"])[0] in {"1", "true", "yes"}
+            self.send_json(build_search_view(index, query, mattered_only))
+            return
+
+        if parsed.path.startswith("/api/bubbles/"):
+            index = build_index(self.config["glimmer_dir"])
+            bubble_id = parsed.path.rsplit("/", 1)[-1]
+            payload = build_bubble_view(index, bubble_id)
+            if payload is None:
+                self.send_error(404, "Bubble not found")
+                return
+            self.send_json(payload)
+            return
+
         if parsed.path in {"", "/"}:
             self.send_file(self.config["ui_dir"] / "index.html")
             return
@@ -417,7 +632,7 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path != "/api/matters":
+        if parsed.path not in {"/api/matters", "/api/review-state"}:
             self.send_error(404)
             return
 
@@ -440,23 +655,40 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
 
         matters_path = self.config["glimmer_dir"] / MATTERS_FILE
         matters = load_matters(matters_path)
-        if marked:
-            existing = matters.get(bubble_id, {})
-            timestamp = datetime.now().isoformat()
-            matters[bubble_id] = {
-                "note": note,
-                "marked_at": existing.get("marked_at") or timestamp,
-                "updated_at": timestamp,
-            }
-        else:
-            matters.pop(bubble_id, None)
+        if parsed.path == "/api/matters":
+            matter = upsert_matter(
+                matters,
+                bubble_id,
+                marked=marked,
+                note=note,
+            )
 
+            save_matters(matters_path, matters)
+            self.send_json(
+                {
+                    "ok": True,
+                    "bubble_id": bubble_id,
+                    "matter": matter,
+                }
+            )
+            return
+
+        if bubble_id not in matters:
+            self.send_error(400, "Bubble must be marked as mattered first")
+            return
+
+        review_state = str(payload.get("review_state") or "").strip()
+        try:
+            matter = update_review_state(matters, bubble_id, review_state)
+        except ValueError as exc:
+            self.send_error(400, str(exc))
+            return
         save_matters(matters_path, matters)
         self.send_json(
             {
                 "ok": True,
                 "bubble_id": bubble_id,
-                "matter": matters.get(bubble_id),
+                "matter": matter,
             }
         )
 
