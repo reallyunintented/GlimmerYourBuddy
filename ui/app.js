@@ -7,6 +7,8 @@ const state = {
   selectedBubbleId: null,
   selectedSessionId: null,
   selectedProjectKey: null,
+  reviewFilter: "all",
+  reviewSort: "recently_marked",
   matterSaving: false,
   reviewSaving: false,
 };
@@ -43,6 +45,12 @@ const REVIEW_META = {
     label: "Stale",
     description: "Kept for context, no longer active.",
   },
+};
+
+const REVIEW_SORT_META = {
+  recently_marked: "Recently marked",
+  recently_reviewed: "Recently reviewed",
+  oldest_open: "Oldest open",
 };
 
 const formatDateTime = (value) => {
@@ -104,6 +112,31 @@ const sessionForBubble = (bubble) => {
   if (!bubble?.session_id) return null;
   return sessionById(bubble.session_id);
 };
+
+const matteredBubbles = () =>
+  (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
+
+const sessionNeighborsForBubble = (bubble) => {
+  const session = sessionForBubble(bubble);
+  if (!session?.bubbles?.length) return { previous: null, next: null };
+  const index = session.bubbles.findIndex((entry) => entry.id === bubble.id);
+  if (index === -1) return { previous: null, next: null };
+  return {
+    previous: session.bubbles[index - 1] ?? null,
+    next: session.bubbles[index + 1] ?? null,
+  };
+};
+
+const relatedMatteredForBubble = (bubble, limit = 3) =>
+  matteredBubbles()
+    .filter(
+      (entry) =>
+        entry.id !== bubble.id &&
+        entry.project_name &&
+        entry.project_name === bubble.project_name
+    )
+    .sort((left, right) => reviewSortKey(right) - reviewSortKey(left))
+    .slice(0, limit);
 
 const setSelectedBubble = (bubbleId) => {
   state.selectedBubbleId = bubbleId;
@@ -216,14 +249,36 @@ const reviewSortKey = (bubble) => {
 };
 
 const reviewGroups = () => {
-  const mattered = (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
+  const mattered = matteredBubbles();
   return REVIEW_STATES.map((reviewState) => ({
     key: reviewState,
     meta: REVIEW_META[reviewState],
-    bubbles: mattered
-      .filter((bubble) => (bubble.review_state || "unreviewed") === reviewState)
-      .sort((left, right) => reviewSortKey(right) - reviewSortKey(left)),
+    bubbles: mattered.filter(
+      (bubble) => (bubble.review_state || "unreviewed") === reviewState
+    ),
   }));
+};
+
+const sortReviewBubbles = (bubbles, reviewState) => {
+  const items = [...bubbles];
+  if (state.reviewSort === "recently_reviewed") {
+    return items.sort((left, right) => {
+      const leftTime = left.reviewed_at ? new Date(left.reviewed_at).getTime() : 0;
+      const rightTime = right.reviewed_at ? new Date(right.reviewed_at).getTime() : 0;
+      return rightTime - leftTime || reviewSortKey(right) - reviewSortKey(left);
+    });
+  }
+  if (state.reviewSort === "oldest_open") {
+    if (reviewState !== "open") {
+      return items.sort((left, right) => reviewSortKey(right) - reviewSortKey(left));
+    }
+    return items.sort((left, right) => {
+      const leftTime = left.mattered_at ? new Date(left.mattered_at).getTime() : 0;
+      const rightTime = right.mattered_at ? new Date(right.mattered_at).getTime() : 0;
+      return leftTime - rightTime || reviewSortKey(left) - reviewSortKey(right);
+    });
+  }
+  return items.sort((left, right) => reviewSortKey(right) - reviewSortKey(left));
 };
 
 const renderProjects = () => {
@@ -397,7 +452,7 @@ const renderSearch = () => {
 };
 
 const renderMattered = () => {
-  const mattered = (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
+  const mattered = matteredBubbles();
   if (!mattered.length) {
     elements.mainContent.replaceChildren(
       buildEmptyState(
@@ -414,7 +469,10 @@ const renderMattered = () => {
 };
 
 const renderReview = () => {
-  const groups = reviewGroups();
+  const groups = reviewGroups().map((group) => ({
+    ...group,
+    bubbles: sortReviewBubbles(group.bubbles, group.key),
+  }));
   const total = groups.reduce((sum, group) => sum + group.bubbles.length, 0);
   if (!total) {
     elements.mainContent.replaceChildren(
@@ -430,26 +488,74 @@ const renderReview = () => {
     if (firstBubble) state.selectedBubbleId = firstBubble.id;
   }
 
+  const visibleGroups =
+    state.reviewFilter === "all"
+      ? groups
+      : groups.filter((group) => group.key === state.reviewFilter);
+
+  const visibleBubbleIds = new Set(
+    visibleGroups.flatMap((group) => group.bubbles.map((bubble) => bubble.id))
+  );
+  if (!visibleBubbleIds.has(state.selectedBubbleId)) {
+    const firstVisibleBubble = visibleGroups.find((group) => group.bubbles[0])?.bubbles[0];
+    if (firstVisibleBubble) state.selectedBubbleId = firstVisibleBubble.id;
+  }
+
   elements.mainContent.innerHTML = "";
   const stack = document.createElement("div");
   stack.className = "section-stack";
   stack.innerHTML = `
     <section class="review-summary">
+      <button
+        class="review-summary-card ${state.reviewFilter === "all" ? "is-active" : ""}"
+        data-review-filter="all"
+      >
+        <div class="card-meta">All mattered</div>
+        <strong>${total}</strong>
+        <p>Everything currently in the review loop.</p>
+      </button>
       ${groups
         .map(
           (group) => `
-            <article class="review-summary-card">
+            <button
+              class="review-summary-card ${state.reviewFilter === group.key ? "is-active" : ""}"
+              data-review-filter="${group.key}"
+            >
               <div class="card-meta">${escapeHtml(group.meta.label)}</div>
               <strong>${group.bubbles.length}</strong>
               <p>${escapeHtml(group.meta.description)}</p>
-            </article>
+            </button>
           `
         )
         .join("")}
     </section>
+    <section class="review-controls">
+      <div class="review-filter-row">
+        <button class="chip-button ${state.reviewFilter === "all" ? "is-active" : ""}" data-review-filter="all">All</button>
+        ${REVIEW_STATES.map(
+          (reviewState) => `
+            <button class="chip-button ${state.reviewFilter === reviewState ? "is-active" : ""}" data-review-filter="${reviewState}">
+              ${escapeHtml(REVIEW_META[reviewState].label)}
+            </button>
+          `
+        ).join("")}
+      </div>
+      <label class="review-sort-shell">
+        <span>Sort</span>
+        <select id="review-sort-select" class="review-sort-select">
+          ${Object.entries(REVIEW_SORT_META)
+            .map(
+              ([value, label]) => `
+                <option value="${value}" ${state.reviewSort === value ? "selected" : ""}>${escapeHtml(label)}</option>
+              `
+            )
+            .join("")}
+        </select>
+      </label>
+    </section>
   `;
 
-  groups.forEach((group) => {
+  visibleGroups.forEach((group) => {
     const section = document.createElement("section");
     section.innerHTML = `
       <div class="section-header">
@@ -471,8 +577,8 @@ const renderReview = () => {
 };
 
 const renderDetail = () => {
-  const matteredBubbles = (state.data?.bubbles ?? []).filter((entry) => entry.mattered);
-  if ((state.view === "mattered" || state.view === "review") && matteredBubbles.length === 0) {
+  const mattered = matteredBubbles();
+  if ((state.view === "mattered" || state.view === "review") && mattered.length === 0) {
     elements.detail.replaceChildren(
       buildEmptyState(
         state.view === "review" ? "Nothing to review yet" : "Nothing marked yet",
@@ -489,6 +595,8 @@ const renderDetail = () => {
     const session = sessionForBubble(bubble);
     const detailBusy = state.matterSaving || state.reviewSaving;
     const reviewState = bubble.review_state || "unreviewed";
+    const neighbors = sessionNeighborsForBubble(bubble);
+    const relatedMattered = relatedMatteredForBubble(bubble);
     elements.detail.innerHTML = `
       <div class="detail-stack">
         <section class="detail-block">
@@ -571,6 +679,46 @@ const renderDetail = () => {
             ${bubble.mattered ? `<div class="meta-item"><dt>Review state</dt><dd>${escapeHtml(REVIEW_META[reviewState]?.label || reviewState)}</dd></div>` : ""}
           </dl>
         </section>
+        ${
+          session
+            ? `
+              <section class="detail-block">
+                <p class="eyebrow">Session Context</p>
+                <div class="context-list">
+                  <button class="context-link" ${neighbors.previous ? `data-jump-bubble="${neighbors.previous.id}"` : "disabled"}>
+                    <span class="context-label">Previous bubble</span>
+                    <span class="context-copy">${escapeHtml(neighbors.previous?.preview || "None")}</span>
+                  </button>
+                  <button class="context-link" ${neighbors.next ? `data-jump-bubble="${neighbors.next.id}"` : "disabled"}>
+                    <span class="context-label">Next bubble</span>
+                    <span class="context-copy">${escapeHtml(neighbors.next?.preview || "None")}</span>
+                  </button>
+                </div>
+              </section>
+            `
+            : ""
+        }
+        ${
+          bubble.project_name && relatedMattered.length
+            ? `
+              <section class="detail-block">
+                <p class="eyebrow">Related Mattered</p>
+                <div class="context-list">
+                  ${relatedMattered
+                    .map(
+                      (entry) => `
+                        <button class="context-link" data-jump-bubble="${entry.id}">
+                          <span class="context-label">${escapeHtml(REVIEW_META[entry.review_state || "unreviewed"]?.label || "Mattered")} · ${escapeHtml(formatShort(entry.mattered_at || entry.timestamp))}</span>
+                          <span class="context-copy">${escapeHtml(entry.preview)}</span>
+                        </button>
+                      `
+                    )
+                    .join("")}
+                </div>
+              </section>
+            `
+            : ""
+        }
       </div>
     `;
     return;
@@ -778,6 +926,13 @@ elements.searchInput.addEventListener("input", (event) => {
   renderMain();
 });
 
+elements.mainContent.addEventListener("change", (event) => {
+  if (event.target.id === "review-sort-select") {
+    state.reviewSort = event.target.value;
+    renderMain();
+  }
+});
+
 elements.refreshButton.addEventListener("click", () => {
   void loadData();
 });
@@ -837,6 +992,13 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const reviewFilterButton = event.target.closest("[data-review-filter]");
+  if (reviewFilterButton) {
+    state.reviewFilter = reviewFilterButton.dataset.reviewFilter;
+    renderMain();
+    return;
+  }
+
   const clearMatterButton = event.target.closest("[data-clear-matter]");
   if (clearMatterButton && !state.matterSaving) {
     void saveMatter(clearMatterButton.dataset.clearMatter, false);
@@ -849,6 +1011,12 @@ document.addEventListener("click", (event) => {
       reviewStateButton.dataset.reviewStateBubble,
       reviewStateButton.dataset.reviewStateValue
     );
+    return;
+  }
+
+  const jumpBubbleButton = event.target.closest("[data-jump-bubble]");
+  if (jumpBubbleButton && !jumpBubbleButton.disabled) {
+    setSelectedBubble(jumpBubbleButton.dataset.jumpBubble);
   }
 });
 
