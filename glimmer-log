@@ -119,7 +119,7 @@ entry = {
     'source': 'manual',
 }
 with open(logfile, 'a', encoding='utf-8') as handle:
-    handle.write(json.dumps(entry) + '\n')
+    handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
 print('Added.')
 PY
 }

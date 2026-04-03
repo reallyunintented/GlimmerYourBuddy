@@ -37,6 +37,7 @@ ANSI_RE = re.compile(
     """,
     re.VERBOSE,
 )
+CURSOR_RIGHT_RE = re.compile(r"\x1b\[(\d*)C")
 
 # Rounded box characters
 TOP_RE = re.compile(r"╭(─+)╮")
@@ -46,6 +47,13 @@ STOP_REQUESTED = False
 
 
 def strip_ansi(text: str) -> str:
+    def preserve_cursor_spacing(match: re.Match[str]) -> str:
+        width = int(match.group(1) or "1")
+        return " " * width
+
+    # Claude's full-screen UI sometimes encodes visible word spacing as
+    # horizontal cursor movement. Preserve that before dropping ANSI codes.
+    text = CURSOR_RIGHT_RE.sub(preserve_cursor_spacing, text)
     return ANSI_RE.sub("", text)
 
 
@@ -132,7 +140,7 @@ def log_bubble(text: str, companion: str):
         "text": text,
     }
     with open(LOGFILE, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def scan_buffer(
