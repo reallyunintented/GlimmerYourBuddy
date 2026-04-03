@@ -98,12 +98,84 @@ class GlimmerUIIndexTests(unittest.TestCase):
             self.assertEqual(index["overview"]["bubble_count"], 2)
             self.assertEqual(index["overview"]["session_count"], 1)
             self.assertEqual(index["overview"]["project_count"], 1)
+            self.assertEqual(index["overview"]["mattered_count"], 0)
             self.assertEqual(index["bubbles"][0]["text"], "Manual bubble")
             self.assertEqual(index["bubbles"][1]["trigger_type"], "buddy_pet")
             self.assertEqual(index["sessions"][0]["project_label"], "alpha")
             self.assertEqual(index["sessions"][0]["bubble_count"], 1)
+            self.assertEqual(index["sessions"][0]["mattered_count"], 0)
             self.assertEqual(index["projects"][0]["project_label"], "alpha")
             self.assertEqual(index["projects"][0]["bubble_count"], 1)
+            self.assertEqual(index["projects"][0]["mattered_count"], 0)
+
+    def test_build_index_merges_mattered_notes_into_views(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+
+            event_entry = {
+                "timestamp": "2026-04-03T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "This is the bubble worth remembering.",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "post_prompt",
+                "trigger_confidence": "heuristic",
+            }
+
+            write_jsonl(glimmer_dir / "events.jsonl", [event_entry])
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            (sessions_dir / "sess-1.json").write_text(
+                json.dumps(
+                    {
+                        "session_id": "sess-1",
+                        "started_at": "2026-04-03T09:59:00+00:00",
+                        "ended_at": "2026-04-03T10:05:00+00:00",
+                        "companion": "Glimmer",
+                        "cwd": "/work/alpha",
+                        "project_root": "/work/alpha",
+                        "project_name": "alpha",
+                        "git_branch": "main",
+                        "is_repo_root": True,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            bubble_id = self.module.bubble_id(event_entry)
+            (glimmer_dir / "mattered.json").write_text(
+                json.dumps(
+                    {
+                        bubble_id: {
+                            "note": "This changed the direction.",
+                            "marked_at": "2026-04-03T11:00:00+00:00",
+                            "updated_at": "2026-04-03T11:05:00+00:00",
+                        }
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            index = self.module.build_index(glimmer_dir)
+
+            self.assertEqual(index["overview"]["mattered_count"], 1)
+            self.assertTrue(index["bubbles"][0]["mattered"])
+            self.assertEqual(index["bubbles"][0]["matter_note"], "This changed the direction.")
+            self.assertEqual(index["sessions"][0]["mattered_count"], 1)
+            self.assertEqual(index["projects"][0]["mattered_count"], 1)
 
 
 if __name__ == "__main__":

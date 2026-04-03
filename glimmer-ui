@@ -17,6 +17,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+MATTERS_FILE = "mattered.json"
+
 DEFAULT_GLIMMER_DIR = Path(
     os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer")
 )
@@ -75,6 +77,33 @@ def load_manifests(path: Path) -> dict[str, dict]:
     return manifests
 
 
+def load_matters(path: Path) -> dict[str, dict]:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    matters = {}
+    for bubble_id, value in parsed.items():
+        if not isinstance(bubble_id, str) or not isinstance(value, dict):
+            continue
+        matters[bubble_id] = {
+            "note": str(value.get("note") or "").strip(),
+            "marked_at": value.get("marked_at"),
+            "updated_at": value.get("updated_at"),
+        }
+    return matters
+
+
+def save_matters(path: Path, matters: dict[str, dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(matters, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    path.write_text(payload, encoding="utf-8")
+
+
 def bubble_id(entry: dict) -> str:
     raw = "|".join(
         [
@@ -108,6 +137,10 @@ def normalize_bubble(entry: dict, source: str) -> dict:
     }
     normalized["id"] = bubble_id(normalized)
     normalized["preview"] = truncate_text(normalized["text"], 120)
+    normalized["mattered"] = False
+    normalized["matter_note"] = ""
+    normalized["mattered_at"] = None
+    normalized["matter_updated_at"] = None
     return normalized
 
 
@@ -156,7 +189,18 @@ def dedupe_bubbles(events: list[dict], legacy: list[dict]) -> list[dict]:
     return bubbles
 
 
-def build_sessions(events: list[dict], manifests: dict[str, dict]) -> list[dict]:
+def apply_matters(bubbles: list[dict], matters: dict[str, dict]) -> None:
+    for bubble in bubbles:
+        matter = matters.get(bubble["id"])
+        if not matter:
+            continue
+        bubble["mattered"] = True
+        bubble["matter_note"] = matter.get("note") or ""
+        bubble["mattered_at"] = matter.get("marked_at")
+        bubble["matter_updated_at"] = matter.get("updated_at")
+
+
+def build_sessions(events: list[dict], manifests: dict[str, dict], matters: dict[str, dict]) -> list[dict]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for entry in events:
         session_id = entry.get("session_id")
@@ -168,6 +212,7 @@ def build_sessions(events: list[dict], manifests: dict[str, dict]) -> list[dict]
     for session_id in set(grouped) | set(manifests):
         manifest = manifests.get(session_id, {})
         bubbles = sorted(grouped.get(session_id, []), key=bubble_sort_session)
+        apply_matters(bubbles, matters)
         latest = bubbles[-1] if bubbles else None
         started_at = session_field(manifest, bubbles, "started_at") or (
             bubbles[0].get("timestamp") if bubbles else None
@@ -190,6 +235,7 @@ def build_sessions(events: list[dict], manifests: dict[str, dict]) -> list[dict]
                 "git_branch": session_field(manifest, bubbles, "git_branch"),
                 "is_repo_root": bool(session_field(manifest, bubbles, "is_repo_root")),
                 "bubble_count": len(bubbles),
+                "mattered_count": sum(1 for bubble in bubbles if bubble.get("mattered")),
                 "latest_bubble_preview": latest.get("preview") if latest else "",
                 "latest_bubble_at": latest_seen,
                 "bubbles": bubbles,
@@ -240,6 +286,9 @@ def build_projects(sessions: list[dict]) -> list[dict]:
                     session.get("bubble_count", 0) for session in sorted_sessions
                 ),
                 "session_count": len(sorted_sessions),
+                "mattered_count": sum(
+                    session.get("mattered_count", 0) for session in sorted_sessions
+                ),
                 "last_seen_at": latest.get("latest_bubble_at")
                 or latest.get("started_at"),
                 "latest_bubble_preview": latest.get("latest_bubble_preview", ""),
@@ -262,9 +311,11 @@ def build_index(glimmer_dir: Path) -> dict:
     log_entries = load_jsonl(glimmer_dir / "log.jsonl")
     event_entries = load_jsonl(glimmer_dir / "events.jsonl")
     manifests = load_manifests(glimmer_dir / "sessions")
+    matters = load_matters(glimmer_dir / MATTERS_FILE)
 
     bubbles = dedupe_bubbles(event_entries, log_entries)
-    sessions = build_sessions(event_entries, manifests)
+    apply_matters(bubbles, matters)
+    sessions = build_sessions(event_entries, manifests, matters)
     projects = build_projects(sessions)
 
     return {
@@ -274,6 +325,7 @@ def build_index(glimmer_dir: Path) -> dict:
             "bubble_count": len(bubbles),
             "session_count": len(sessions),
             "project_count": len(projects),
+            "mattered_count": sum(1 for bubble in bubbles if bubble.get("mattered")),
         },
         "bubbles": bubbles,
         "sessions": sessions,
@@ -302,6 +354,21 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
     @property
     def config(self) -> dict:
         return self.server.config  # type: ignore[attr-defined]
+
+    def parse_json_body(self) -> dict | None:
+        content_length = self.headers.get("Content-Length")
+        if not content_length:
+            return None
+        try:
+            length = int(content_length)
+        except ValueError:
+            return None
+        raw = self.rfile.read(length)
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     def send_json(self, payload: dict | list, status: int = 200) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -347,6 +414,51 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             return
 
         self.send_error(404)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/matters":
+            self.send_error(404)
+            return
+
+        payload = self.parse_json_body()
+        if payload is None:
+            self.send_error(400, "Invalid JSON body")
+            return
+
+        bubble_id = str(payload.get("bubble_id") or "").strip()
+        marked = bool(payload.get("marked"))
+        note = str(payload.get("note") or "").strip()
+        if not bubble_id:
+            self.send_error(400, "bubble_id is required")
+            return
+
+        index = build_index(self.config["glimmer_dir"])
+        if not any(bubble.get("id") == bubble_id for bubble in index["bubbles"]):
+            self.send_error(404, "Bubble not found")
+            return
+
+        matters_path = self.config["glimmer_dir"] / MATTERS_FILE
+        matters = load_matters(matters_path)
+        if marked:
+            existing = matters.get(bubble_id, {})
+            timestamp = datetime.now().isoformat()
+            matters[bubble_id] = {
+                "note": note,
+                "marked_at": existing.get("marked_at") or timestamp,
+                "updated_at": timestamp,
+            }
+        else:
+            matters.pop(bubble_id, None)
+
+        save_matters(matters_path, matters)
+        self.send_json(
+            {
+                "ok": True,
+                "bubble_id": bubble_id,
+                "matter": matters.get(bubble_id),
+            }
+        )
 
 
 def parse_args() -> argparse.Namespace:

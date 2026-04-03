@@ -7,6 +7,7 @@ const state = {
   selectedBubbleId: null,
   selectedSessionId: null,
   selectedProjectKey: null,
+  matterSaving: false,
 };
 
 const elements = {
@@ -121,12 +122,14 @@ const renderOverview = () => {
     <div class="overview-card"><strong>${overview.bubble_count}</strong><span class="muted">Bubbles</span></div>
     <div class="overview-card"><strong>${overview.session_count}</strong><span class="muted">Sessions</span></div>
     <div class="overview-card"><strong>${overview.project_count}</strong><span class="muted">Projects</span></div>
+    <div class="overview-card"><strong>${overview.mattered_count ?? 0}</strong><span class="muted">Mattered</span></div>
   `;
   elements.generatedAt.textContent = `Updated ${formatShort(state.data.generated_at)}`;
 };
 
 const bubbleChips = (bubble) => {
   const chips = [];
+  if (bubble.mattered) chips.push(`<span class="chip chip-accent">Mattered</span>`);
   if (bubble.project_name) chips.push(`<span class="chip">${escapeHtml(bubble.project_name)}</span>`);
   if (bubble.git_branch) chips.push(`<span class="chip">${escapeHtml(bubble.git_branch)}</span>`);
   if (bubble.trigger_type && bubble.trigger_type !== "unknown") {
@@ -201,6 +204,7 @@ const renderProjects = () => {
           <div class="chip-row">
             <span class="chip">${project.bubble_count} bubbles</span>
             <span class="chip">${project.session_count} sessions</span>
+            ${project.mattered_count ? `<span class="chip chip-accent">${project.mattered_count} mattered</span>` : ""}
           </div>
           <p class="card-text">${escapeHtml(project.latest_bubble_preview || "No bubble preview yet.")}</p>
           <div class="card-meta">${escapeHtml((project.branches || []).join(" · ") || "No branch context")}</div>
@@ -229,6 +233,7 @@ const renderProjectDetail = () => {
       <div class="chip-row">
         <span class="chip">${project.bubble_count} bubbles</span>
         <span class="chip">${project.session_count} sessions</span>
+        ${project.mattered_count ? `<span class="chip chip-accent">${project.mattered_count} mattered</span>` : ""}
         <span class="chip">Last seen ${escapeHtml(formatShort(project.last_seen_at))}</span>
       </div>
       <p class="card-text">${escapeHtml(project.latest_bubble_preview || "No preview yet.")}</p>
@@ -245,6 +250,7 @@ const renderProjectDetail = () => {
               <h3 class="card-title">${escapeHtml(session.project_label)}</h3>
               <div class="chip-row">
                 <span class="chip">${session.bubble_count} bubbles</span>
+                ${session.mattered_count ? `<span class="chip chip-accent">${session.mattered_count} mattered</span>` : ""}
                 <span class="chip">${escapeHtml(session.git_branch || "No branch")}</span>
               </div>
               <p class="card-text">${escapeHtml(session.latest_bubble_preview || "No preview yet.")}</p>
@@ -279,6 +285,7 @@ const renderSessions = () => {
           <h3 class="card-title">${escapeHtml(session.project_label)}</h3>
           <div class="chip-row">
             <span class="chip">${session.bubble_count} bubbles</span>
+            ${session.mattered_count ? `<span class="chip chip-accent">${session.mattered_count} mattered</span>` : ""}
             <span class="chip">${escapeHtml(session.git_branch || "No branch")}</span>
             <span class="chip">${session.ended_at ? "Ended" : "Open"}</span>
           </div>
@@ -353,6 +360,35 @@ const renderDetail = () => {
           <p class="eyebrow">Bubble</p>
           <h3 class="detail-title">${escapeHtml(bubble.companion)}</h3>
           <p class="detail-copy">${escapeHtml(bubble.text)}</p>
+          <section class="matter-panel">
+            <div class="matter-head">
+              <div>
+                <p class="eyebrow">This Mattered</p>
+                <p class="matter-copy">Mark the bubble and leave a short note about why it mattered.</p>
+              </div>
+              ${bubble.mattered ? '<span class="matter-badge">Marked</span>' : ""}
+            </div>
+            <textarea
+              id="matter-note-input"
+              class="matter-note-input"
+              placeholder="Optional note about why this mattered."
+            >${escapeHtml(bubble.matter_note || "")}</textarea>
+            <div class="matter-actions">
+              <button class="link-button" data-save-matter="${bubble.id}">
+                ${state.matterSaving ? "Saving..." : bubble.mattered ? "Save note" : "Mark mattered"}
+              </button>
+              ${
+                bubble.mattered
+                  ? `<button class="secondary-button" data-clear-matter="${bubble.id}" ${state.matterSaving ? "disabled" : ""}>Unmark</button>`
+                  : ""
+              }
+            </div>
+            ${
+              bubble.mattered_at
+                ? `<p class="matter-meta">Marked ${escapeHtml(formatDateTime(bubble.mattered_at))}${bubble.matter_updated_at && bubble.matter_updated_at !== bubble.mattered_at ? ` · updated ${escapeHtml(formatDateTime(bubble.matter_updated_at))}` : ""}</p>`
+                : ""
+            }
+          </section>
           ${session ? `<button class="link-button" data-open-session="${session.session_id}">Open session</button>` : ""}
         </section>
         <section class="detail-block">
@@ -363,6 +399,7 @@ const renderDetail = () => {
             <div class="meta-item"><dt>CWD</dt><dd>${escapeHtml(bubble.cwd || "No cwd")}</dd></div>
             <div class="meta-item"><dt>Trigger</dt><dd>${escapeHtml(bubble.trigger_type || "Unknown")}</dd></div>
             <div class="meta-item"><dt>Source</dt><dd>${escapeHtml(bubble.source || "legacy")}</dd></div>
+            <div class="meta-item"><dt>Mattered</dt><dd>${bubble.mattered ? "Yes" : "No"}</dd></div>
           </dl>
         </section>
       </div>
@@ -418,6 +455,34 @@ const renderDetail = () => {
   elements.detail.replaceChildren(
     buildEmptyState("Select something", "Choose a bubble, session, or project to inspect the details on the right.")
   );
+};
+
+const saveMatter = async (bubbleId, marked) => {
+  const noteInput = document.getElementById("matter-note-input");
+  state.matterSaving = true;
+  renderDetail();
+  try {
+    const response = await fetch("/api/matters", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        bubble_id: bubbleId,
+        marked,
+        note: noteInput?.value ?? "",
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Save failed with ${response.status}`);
+    }
+    await loadData();
+  } catch (error) {
+    console.error("Failed to save mattered bubble:", error);
+  } finally {
+    state.matterSaving = false;
+    renderDetail();
+  }
 };
 
 const renderMain = () => {
@@ -550,6 +615,18 @@ document.addEventListener("click", (event) => {
   const backButton = event.target.closest("[data-back-to]");
   if (backButton) {
     setView(backButton.dataset.backTo);
+    return;
+  }
+
+  const saveMatterButton = event.target.closest("[data-save-matter]");
+  if (saveMatterButton && !state.matterSaving) {
+    void saveMatter(saveMatterButton.dataset.saveMatter, true);
+    return;
+  }
+
+  const clearMatterButton = event.target.closest("[data-clear-matter]");
+  if (clearMatterButton && !state.matterSaving) {
+    void saveMatter(clearMatterButton.dataset.clearMatter, false);
   }
 });
 

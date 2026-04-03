@@ -375,6 +375,12 @@ input {
   cursor: pointer;
 }
 
+.chip-accent {
+  background: rgba(49, 92, 122, 0.12);
+  color: var(--accent-deep);
+  border-color: rgba(49, 92, 122, 0.14);
+}
+
 .detail {
   padding: 18px;
   overflow: auto;
@@ -439,6 +445,65 @@ input {
   color: white;
   border-color: transparent;
   font-weight: 600;
+}
+
+.matter-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(49, 92, 122, 0.12);
+  background: rgba(49, 92, 122, 0.04);
+}
+
+.matter-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.matter-copy,
+.matter-meta {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+  font-size: 0.9rem;
+}
+
+.matter-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(49, 92, 122, 0.12);
+  color: var(--accent-deep);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.matter-note-input {
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 13px;
+  background: rgba(255, 255, 255, 0.98);
+  color: var(--text);
+  outline: none;
+  line-height: 1.55;
+}
+
+.matter-note-input:focus {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 4px rgba(49, 92, 122, 0.08);
+}
+
+.matter-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .empty-state {
