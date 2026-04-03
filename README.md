@@ -73,6 +73,14 @@ glimmer-log --stats
 glimmer-log --json
 ```
 
+### Watcher Debug Output
+By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.
+
+If you want to see watcher debug lines live anyway, run:
+```bash
+GLIMMER_WATCHER_STDOUT=1 glimmer-claude
+```
+
 ### Manually Add a Bubble
 Heard something great and want to log it manually?
 ```bash
@@ -83,12 +91,12 @@ glimmer-log --add "This is something brilliant my buddy said"
 
 ## 💾 Where It's Stored
 
-All bubbles are saved locally in:
-```
-~/.claude/glimmer/log.jsonl
-```
+Glimmer writes a few local files on purpose. They have different jobs.
 
-`log.jsonl` stays simple for compatibility:
+### `~/.claude/glimmer/log.jsonl`
+This is the compatibility log. It is the main "plain bubble history" file.
+
+Each line is a simple JSON object:
 ```json
 {
   "timestamp": "2026-04-03T14:22:15+00:00",
@@ -97,14 +105,12 @@ All bubbles are saved locally in:
 }
 ```
 
-Session metadata and trigger tagging are stored separately in:
-```
-~/.claude/glimmer/events.jsonl
-~/.claude/glimmer/sessions/
-~/.claude/glimmer/watcher.log
-```
+This file is meant to stay simple and stable. It is what `glimmer-log`, `glimmer-log -n`, `glimmer-log --json`, and `glimmer-log --stats` use for the all-time view.
 
-An event entry looks like:
+### `~/.claude/glimmer/events.jsonl`
+This is the richer sidecar event log for auto-captured bubbles.
+
+It stores session metadata and trigger tagging without polluting `log.jsonl`:
 ```json
 {
   "timestamp": "2026-04-03T14:22:15+00:00",
@@ -119,15 +125,65 @@ An event entry looks like:
 }
 ```
 
+This file is what `glimmer-log --sessions` and `glimmer-log --session ...` use.
+
+### `~/.claude/glimmer/sessions/`
+This directory holds one manifest per Claude run:
+```json
+{
+  "session_id": "20260403-142215-12345",
+  "started_at": "2026-04-03T14:22:15+00:00",
+  "ended_at": "2026-04-03T14:30:02+00:00",
+  "companion": "Glimmer",
+  "raw_path": "/home/user/.claude/glimmer/raw/session-20260403-142215-12345.raw",
+  "argv": ["claude"]
+}
+```
+
+These manifests let Glimmer list sessions even if a run had zero captured bubbles.
+
+### `~/.claude/glimmer/raw/`
+This directory holds the raw terminal capture from `script`.
+
+Glimmer does not show these files in normal use, but they are the source material the watcher parses.
+
+### `~/.claude/glimmer/watcher.log`
+This is the watcher's own debug log.
+
+The watcher writes its internal status here instead of printing into Claude's fullscreen UI by default.
+
+### Summary
+All bubbles are still saved locally. The split is:
+```
+log.jsonl      plain bubble history
+events.jsonl   richer auto-capture metadata
+sessions/      one manifest per Claude run
+raw/           raw terminal recordings
+watcher.log    watcher debug output
+```
+
 **Your data stays on your machine.** Glimmer never uploads anything.
 
 ---
 
 ## 🔧 How It Works
 
-- **`glimmer-claude`** — Wrapper that runs Claude Code and pipes output to the watcher
-- **`glimmer-watcher.py`** — Tails your session in real-time, waits for stable bubble text, keeps `log.jsonl` simple, writes session metadata separately
-- **`glimmer-log`** — Reader that displays bubbles across all time or grouped by session
+### The Short Version
+- **`glimmer-claude`** starts Claude inside `script`, creates a session id, writes a session manifest, and launches the watcher.
+- **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, and writes logs.
+- **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for.
+
+### Trigger Tagging
+For auto-captured entries, Glimmer also stores trigger metadata in `events.jsonl`:
+
+- `buddy_pet`
+  Exact when the watcher can see `/buddy pet` before the bubble.
+- `post_prompt`
+  Best-effort when a bubble appears after prompt completion.
+- `unknown`
+  Used when the watcher cannot honestly attribute the bubble.
+
+The plain `log.jsonl` file does not include these extra fields on purpose.
 
 ---
 
@@ -189,10 +245,27 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Deduplication** — Won't log the same bubble twice  
 ✅ **Session-aware** — New runs get their own session IDs and manifests  
 ✅ **Trigger tagging** — Exact `/buddy pet` and best-effort post-prompt attribution  
+✅ **Cleaner terminal UI** — Watcher debug output is separate by default  
+✅ **More stable capture** — Bubble text must survive more than one scan before logging  
 ✅ **Lightweight** — ~300 lines of Python, minimal dependencies  
 ✅ **Privacy-first** — All data stays local  
 ✅ **Simple** — Just 3 scripts, no bloat  
 ✅ **Portable** — Works on any system with Python 3.7+ and Claude Code  
+
+---
+
+## 🧰 Troubleshooting
+
+### `glimmer-log --sessions` shows nothing
+Only newer runs have session metadata. Older bubbles still remain visible in the plain all-time log.
+
+Start one fresh run with:
+```bash
+glimmer-claude
+```
+
+### Want more technical detail?
+See [CONTRIBUTING.md](CONTRIBUTING.md) for implementation notes, storage details, and debugging workflow.
 
 ---
 
