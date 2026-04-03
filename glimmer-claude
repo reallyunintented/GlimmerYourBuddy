@@ -13,6 +13,7 @@ set -euo pipefail
 
 GLIMMER_DIR="$HOME/.claude/glimmer"
 RAW_DIR="$GLIMMER_DIR/raw"
+SESSIONS_DIR="$GLIMMER_DIR/sessions"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHER="${GLIMMER_WATCHER:-}"
 
@@ -42,7 +43,7 @@ if [ ! -x "$WATCHER" ]; then
     exit 1
 fi
 
-mkdir -p "$RAW_DIR"
+mkdir -p "$RAW_DIR" "$SESSIONS_DIR"
 
 # Get companion name from config
 COMPANION_NAME=$(python3 -c "
@@ -56,20 +57,74 @@ except: print('Glimmer')
 # Session-specific raw capture file
 SESSION_ID="$(date +%Y%m%d-%H%M%S)-$$"
 TYPESCRIPT="$RAW_DIR/session-${SESSION_ID}.raw"
+MANIFEST_PATH="$SESSIONS_DIR/${SESSION_ID}.json"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+WATCHER_PID=""
+CLAUDE_ARGS=( "$@" )
 
-echo "Starting Claude Code with Glimmer logging..."
-echo "  Companion: $COMPANION_NAME"
-echo "  Log file:  $GLIMMER_DIR/log.jsonl"
-echo ""
+write_session_manifest() {
+    python3 - "$MANIFEST_PATH" "$SESSION_ID" "$STARTED_AT" "$COMPANION_NAME" "$TYPESCRIPT" "${CLAUDE_ARGS[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
 
-# Start the watcher in background
-python3 "$WATCHER" "$TYPESCRIPT" "$COMPANION_NAME" &
-WATCHER_PID=$!
+manifest_path = Path(sys.argv[1])
+session_id = sys.argv[2]
+started_at = sys.argv[3]
+companion = sys.argv[4]
+raw_path = sys.argv[5]
+argv = ["claude", *sys.argv[6:]]
+
+manifest = {
+    "session_id": session_id,
+    "started_at": started_at,
+    "ended_at": None,
+    "companion": companion,
+    "raw_path": raw_path,
+    "argv": argv,
+}
+manifest_path.write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+finalize_session_manifest() {
+    local ended_at="$1"
+    python3 - "$MANIFEST_PATH" "$SESSION_ID" "$ended_at" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+session_id = sys.argv[2]
+ended_at = sys.argv[3]
+
+manifest = {}
+if manifest_path.exists():
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        manifest = {}
+
+manifest["session_id"] = manifest.get("session_id", session_id)
+manifest["ended_at"] = ended_at
+manifest_path.write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+}
 
 cleanup() {
     local exit_code=$?
+    local ended_at
 
-    if kill -0 "$WATCHER_PID" 2>/dev/null; then
+    ended_at="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+    finalize_session_manifest "$ended_at"
+
+    if [ -n "${WATCHER_PID:-}" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then
         kill -TERM "$WATCHER_PID" 2>/dev/null || true
         wait "$WATCHER_PID" 2>/dev/null || true
     fi
@@ -85,10 +140,21 @@ trap cleanup EXIT
 
 # Create the raw file so the watcher can start tailing immediately
 touch "$TYPESCRIPT"
+write_session_manifest
+
+echo "Starting Claude Code with Glimmer logging..."
+echo "  Companion: $COMPANION_NAME"
+echo "  Session:   $SESSION_ID"
+echo "  Log file:  $GLIMMER_DIR/log.jsonl"
+echo ""
+
+# Start the watcher in background
+python3 "$WATCHER" "$TYPESCRIPT" "$COMPANION_NAME" "$SESSION_ID" "$MANIFEST_PATH" &
+WATCHER_PID=$!
 
 # Build the claude command with properly quoted args
 CLAUDE_CMD="claude"
-for arg in "$@"; do
+for arg in "${CLAUDE_ARGS[@]}"; do
     CLAUDE_CMD+=" $(printf '%q' "$arg")"
 done
 

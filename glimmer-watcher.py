@@ -5,11 +5,10 @@ Glimmer speech bubble watcher.
 Tails a `script` typescript file, strips ANSI escape sequences,
 detects rounded-box speech bubbles, and logs unique ones to JSONL.
 
-Usage: glimmer-watcher.py <typescript-file> [companion-name]
+Usage: glimmer-watcher.py <typescript-file> [companion-name] [session-id] [manifest-path]
 """
 
 import json
-import os
 import re
 import signal
 import sys
@@ -18,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 LOGFILE = Path.home() / ".claude" / "glimmer" / "log.jsonl"
+EVENTSFILE = Path.home() / ".claude" / "glimmer" / "events.jsonl"
 # How often to scan the buffer (seconds)
 SCAN_INTERVAL = 1.5
 # Minimum box width to consider (Glimmer's box is 34 chars)
@@ -38,12 +38,16 @@ ANSI_RE = re.compile(
     re.VERBOSE,
 )
 CURSOR_RIGHT_RE = re.compile(r"\x1b\[(\d*)C")
+PROMPT_LINE_RE = re.compile(r"^\s*❯\s*(.*?)\s*$")
+PROMPT_MARKER_RE = re.compile(r"^\s*❯(?:\s.*)?$")
 
 # Rounded box characters
 TOP_RE = re.compile(r"╭(─+)╮")
 BOT_RE = re.compile(r"╰(─+)╯")
 MID_RE = re.compile(r"│(.+?)│")
 STOP_REQUESTED = False
+BUBBLE_CONTEXT_BEFORE = 4000
+BUBBLE_CONTEXT_AFTER = 1500
 
 
 def strip_ansi(text: str) -> str:
@@ -75,22 +79,40 @@ IGNORE_PREFIXES = (
 )
 
 
-def extract_bubbles(text: str) -> list[str]:
-    """Find speech bubble content in cleaned terminal text."""
-    lines = normalize_lines(text)
+def line_spans(text: str) -> list[dict]:
+    """Return non-empty terminal lines with source offsets."""
+    spans = []
+    for match in re.finditer(r"[^\r\n]+", text):
+        spans.append(
+            {
+                "text": match.group(0),
+                "start": match.start(),
+                "end": match.end(),
+            }
+        )
+    return spans
+
+
+def extract_bubble_candidates(text: str) -> list[dict]:
+    """Find speech bubbles and keep source offsets for trigger attribution."""
+    lines = line_spans(text)
     bubbles = []
     i = 0
     while i < len(lines):
-        top = TOP_RE.search(lines[i])
+        top = TOP_RE.search(lines[i]["text"])
         if top:
             width = len(top.group(1)) + 2  # +2 for corners
             if MIN_BOX_WIDTH <= width <= MAX_BOX_WIDTH:
                 content_lines = []
+                bubble_start = lines[i]["start"]
+                bubble_end = lines[i]["end"]
                 j = i + 1
                 while j < len(lines):
-                    if BOT_RE.search(lines[j]):
+                    current_line = lines[j]["text"]
+                    bubble_end = lines[j]["end"]
+                    if BOT_RE.search(current_line):
                         break
-                    mid = MID_RE.search(lines[j])
+                    mid = MID_RE.search(current_line)
                     if mid:
                         content_lines.append(mid.group(1).strip())
                     j += 1
@@ -107,24 +129,111 @@ def extract_bubbles(text: str) -> list[str]:
                             bubble_text.startswith(p) for p in IGNORE_PREFIXES
                         )
                     ):
-                        bubbles.append(bubble_text)
+                        bubbles.append(
+                            {
+                                "text": bubble_text,
+                                "start": bubble_start,
+                                "end": bubble_end,
+                            }
+                        )
                 i = j + 1
                 continue
         i += 1
     return bubbles
 
 
-def load_seen() -> set[str]:
-    """Load previously logged bubble texts to avoid duplicates."""
+def find_last_prompt_line(text: str) -> str | None:
+    """Return the most recent visible prompt line in the given text window."""
+    last_prompt = None
+    for line in normalize_lines(text):
+        match = PROMPT_LINE_RE.match(line)
+        if match:
+            prompt_text = match.group(1).strip()
+            if prompt_text:
+                last_prompt = prompt_text
+    return last_prompt
+
+
+def has_prompt_marker(text: str) -> bool:
+    """Whether the visible terminal content contains a ready prompt marker."""
+    return any(PROMPT_MARKER_RE.match(line) for line in normalize_lines(text))
+
+
+def classify_trigger(cleaned_text: str, bubble: dict) -> dict:
+    """Best-effort trigger attribution for a newly seen bubble."""
+    start = bubble["start"]
+    end = bubble["end"]
+    before = cleaned_text[max(0, start - BUBBLE_CONTEXT_BEFORE):start]
+    after = cleaned_text[end:min(len(cleaned_text), end + BUBBLE_CONTEXT_AFTER)]
+    prompt_text = find_last_prompt_line(before)
+
+    if prompt_text == "/buddy pet":
+        return {
+            "trigger_type": "buddy_pet",
+            "trigger_confidence": "exact",
+            "trigger_text": "/buddy pet",
+        }
+
+    if has_prompt_marker(after):
+        trigger = {
+            "trigger_type": "post_prompt",
+            "trigger_confidence": "heuristic",
+        }
+        if prompt_text and not prompt_text.startswith("/"):
+            trigger["trigger_text"] = prompt_text
+        return trigger
+
+    return {
+        "trigger_type": "unknown",
+        "trigger_confidence": "none",
+    }
+
+
+def load_session_state(session_id: str | None) -> tuple[set[str], int]:
+    """Load bubbles already logged for this session."""
     seen = set()
-    if LOGFILE.exists():
-        for line in LOGFILE.read_text().splitlines():
+    bubble_seq = 0
+    if EVENTSFILE.exists():
+        for line in EVENTSFILE.read_text(encoding="utf-8").splitlines():
             try:
                 entry = json.loads(line)
+                if entry.get("session_id") != session_id:
+                    continue
                 seen.add(entry.get("text", ""))
+                bubble_seq = max(bubble_seq, int(entry.get("bubble_seq", 0) or 0))
             except json.JSONDecodeError:
                 pass
-    return seen
+            except (TypeError, ValueError):
+                pass
+    return seen, bubble_seq
+
+
+def load_session_context(
+    filepath: str, companion: str, session_id: str | None, manifest_path: str | None
+) -> dict:
+    """Load session metadata written by glimmer-claude."""
+    context = {
+        "session_id": session_id,
+        "raw_path": filepath,
+        "companion": companion,
+        "manifest_path": manifest_path,
+    }
+    if not manifest_path:
+        return context
+
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return context
+
+    if not isinstance(manifest, dict):
+        return context
+
+    for key in ("session_id", "raw_path", "companion", "started_at", "ended_at"):
+        value = manifest.get(key)
+        if value:
+            context[key] = value
+    return context
 
 
 def request_stop(_signum, _frame):
@@ -132,43 +241,96 @@ def request_stop(_signum, _frame):
     STOP_REQUESTED = True
 
 
-def log_bubble(text: str, companion: str):
-    """Append a bubble to the log file."""
+def build_entry(
+    text: str,
+    companion: str,
+    session_ctx: dict,
+    bubble_seq: int,
+    trigger_ctx: dict,
+    timestamp: str,
+) -> dict:
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": timestamp,
+        "companion": companion,
+        "text": text,
+        "source": "auto",
+        "bubble_seq": bubble_seq,
+        "trigger_type": trigger_ctx.get("trigger_type", "unknown"),
+        "trigger_confidence": trigger_ctx.get("trigger_confidence", "none"),
+    }
+    if session_ctx.get("session_id"):
+        entry["session_id"] = session_ctx["session_id"]
+    if session_ctx.get("raw_path"):
+        entry["raw_path"] = session_ctx["raw_path"]
+    if trigger_ctx.get("trigger_text"):
+        entry["trigger_text"] = trigger_ctx["trigger_text"]
+    return entry
+
+
+def build_legacy_entry(text: str, companion: str, timestamp: str) -> dict:
+    return {
+        "timestamp": timestamp,
         "companion": companion,
         "text": text,
     }
-    with open(LOGFILE, "a") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_legacy_entry(entry: dict) -> None:
+    with open(LOGFILE, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_event_entry(entry: dict) -> None:
+    EVENTSFILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(EVENTSFILE, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def scan_buffer(
-    buf: str, seen: set[str], session_seen: set[str], companion: str
-) -> None:
+    buf: str,
+    session_seen: set[str],
+    companion: str,
+    session_ctx: dict,
+    bubble_seq: int,
+) -> int:
     """Extract and persist unseen bubbles from the current buffer."""
     cleaned = strip_ansi(buf)
-    bubbles = extract_bubbles(cleaned)
+    bubbles = extract_bubble_candidates(cleaned)
     for bubble in bubbles:
-        if bubble not in seen and bubble not in session_seen:
-            seen.add(bubble)
-            session_seen.add(bubble)
-            log_bubble(bubble, companion)
-            preview = bubble[:60]
-            suffix = "..." if len(bubble) > 60 else ""
+        bubble_text = bubble["text"]
+        if bubble_text not in session_seen:
+            session_seen.add(bubble_text)
+            bubble_seq += 1
+            trigger_ctx = classify_trigger(cleaned, bubble)
+            timestamp = datetime.now(timezone.utc).isoformat()
+            legacy_entry = build_legacy_entry(bubble_text, companion, timestamp)
+            event_entry = build_entry(
+                bubble_text,
+                companion,
+                session_ctx,
+                bubble_seq,
+                trigger_ctx,
+                timestamp,
+            )
+            log_legacy_entry(legacy_entry)
+            log_event_entry(event_entry)
+            preview = bubble_text[:60]
+            suffix = "..." if len(bubble_text) > 60 else ""
             print(f'[glimmer-watcher] Caught: "{preview}{suffix}"')
+    return bubble_seq
 
 
-def tail_and_watch(filepath: str, companion: str):
+def tail_and_watch(filepath: str, companion: str, session_ctx: dict):
     """Tail the typescript file and scan for bubbles."""
-    seen = load_seen()
     # Track what we've already scanned in this session to avoid re-processing
-    session_seen: set[str] = set()
+    session_seen, bubble_seq = load_session_state(session_ctx.get("session_id"))
     file_pos = 0
     buf = ""
 
     print(f"[glimmer-watcher] Watching for {companion}'s speech bubbles...")
     print(f"[glimmer-watcher] Logging to {LOGFILE}")
+    if session_ctx.get("session_id"):
+        print(f"[glimmer-watcher] Session: {session_ctx['session_id']}")
 
     while True:
         try:
@@ -186,7 +348,13 @@ def tail_and_watch(filepath: str, companion: str):
             pass
 
         if buf:
-            scan_buffer(buf, seen, session_seen, companion)
+            bubble_seq = scan_buffer(
+                buf,
+                session_seen,
+                companion,
+                session_ctx,
+                bubble_seq,
+            )
 
         if STOP_REQUESTED:
             try:
@@ -200,7 +368,13 @@ def tail_and_watch(filepath: str, companion: str):
                 pass
 
             if buf:
-                scan_buffer(buf, seen, session_seen, companion)
+                bubble_seq = scan_buffer(
+                    buf,
+                    session_seen,
+                    companion,
+                    session_ctx,
+                    bubble_seq,
+                )
             break
 
         time.sleep(SCAN_INTERVAL)
@@ -208,18 +382,24 @@ def tail_and_watch(filepath: str, companion: str):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: glimmer-watcher.py <typescript-file> [companion-name]")
+        print(
+            "Usage: glimmer-watcher.py <typescript-file> [companion-name] [session-id] [manifest-path]"
+        )
         sys.exit(1)
 
     filepath = sys.argv[1]
     companion = sys.argv[2] if len(sys.argv) > 2 else "Glimmer"
+    session_id = sys.argv[3] if len(sys.argv) > 3 else None
+    manifest_path = sys.argv[4] if len(sys.argv) > 4 else None
+    session_ctx = load_session_context(filepath, companion, session_id, manifest_path)
 
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
+    EVENTSFILE.parent.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
     try:
-        tail_and_watch(filepath, companion)
+        tail_and_watch(filepath, companion, session_ctx)
     except KeyboardInterrupt:
         print("\n[glimmer-watcher] Stopped.")
 

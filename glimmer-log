@@ -3,16 +3,20 @@
 # glimmer-log — View Glimmer's captured speech bubbles.
 #
 # Usage:
-#   glimmer-log          Show all bubbles
-#   glimmer-log -n 10    Show last 10 bubbles
-#   glimmer-log --json   Raw JSONL output
-#   glimmer-log --stats  Show statistics
-#   glimmer-log --add "text here"  Manually add a bubble
+#   glimmer-log                  Show all bubbles from legacy log.jsonl
+#   glimmer-log -n 10            Show last 10 bubbles
+#   glimmer-log --session latest Show newest session from events.jsonl
+#   glimmer-log --sessions       List known sessions
+#   glimmer-log --json           Raw legacy JSONL output
+#   glimmer-log --stats          Show legacy log statistics
+#   glimmer-log --add "text"     Manually add a bubble
 #
 
 set -euo pipefail
 
 LOGFILE="$HOME/.claude/glimmer/log.jsonl"
+EVENTSFILE="$HOME/.claude/glimmer/events.jsonl"
+SESSIONS_DIR="$HOME/.claude/glimmer/sessions"
 
 require_logfile() {
     if [ ! -f "$LOGFILE" ]; then
@@ -22,83 +26,214 @@ require_logfile() {
     fi
 }
 
-show_pretty() {
-    local limit="${1:-0}"
-    python3 - "$LOGFILE" "$limit" <<'PY'
+view_legacy() {
+    local mode="$1"
+    local limit="${2:-0}"
+    python3 - "$LOGFILE" "$mode" "$limit" <<'PY'
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
 
-logfile = sys.argv[1]
-limit = int(sys.argv[2])
-
-with open(logfile, encoding="utf-8") as handle:
-    lines = handle.readlines()
-
-if limit > 0:
-    lines = lines[-limit:]
-
-for line in lines:
-    try:
-        e = json.loads(line)
-        ts = e.get('timestamp', '')
-        # Parse and format timestamp
-        try:
-            dt = datetime.fromisoformat(ts)
-            ts_str = dt.strftime('%Y-%m-%d %H:%M')
-        except:
-            ts_str = ts[:16]
-        name = e.get('companion', 'Glimmer')
-        text = e.get('text', '')
-        print(f'  \033[2m{ts_str}\033[0m  \033[1;35m{name}\033[0m')
-        print(f'  \033[3m\"{text}\"\033[0m')
-        print()
-    except json.JSONDecodeError:
-        pass
-PY
-}
-
-show_stats() {
-    python3 - "$LOGFILE" <<'PY'
-import json
-import sys
-from datetime import datetime
-
-logfile = sys.argv[1]
-
-with open(logfile, encoding="utf-8") as handle:
-    lines = handle.readlines()
+logfile = Path(sys.argv[1])
+mode = sys.argv[2]
+limit = int(sys.argv[3])
 
 entries = []
-for line in lines:
+for line in logfile.read_text(encoding="utf-8").splitlines():
     try:
         entries.append(json.loads(line))
     except json.JSONDecodeError:
         pass
 
+if mode == "json":
+    if limit > 0:
+        entries = entries[-limit:]
+    for entry in entries:
+        print(json.dumps(entry, ensure_ascii=False))
+    sys.exit(0)
+
 if not entries:
-    print('No bubbles yet.')
-    exit()
+    print("No bubbles yet.")
+    sys.exit(0)
 
-print(f'Total bubbles captured: {len(entries)}')
+if mode == "stats":
+    print(f"Total bubbles captured: {len(entries)}")
+    try:
+        first = datetime.fromisoformat(entries[0]["timestamp"])
+        last = datetime.fromisoformat(entries[-1]["timestamp"])
+        print(f'First: {first.strftime("%Y-%m-%d %H:%M")}')
+        print(f'Last:  {last.strftime("%Y-%m-%d %H:%M")}')
+    except (KeyError, ValueError):
+        pass
+    avg_len = sum(len(entry.get("text", "")) for entry in entries) / len(entries)
+    print(f"Average bubble length: {avg_len:.0f} chars")
+    longest = max(entries, key=lambda entry: len(entry.get("text", "")))
+    preview = longest["text"][:80]
+    suffix = "..." if len(longest["text"]) > 80 else ""
+    print(f'Longest: "{preview}{suffix}"')
+    sys.exit(0)
 
-# First and last
-try:
-    first = datetime.fromisoformat(entries[0]['timestamp'])
-    last = datetime.fromisoformat(entries[-1]['timestamp'])
-    print(f'First: {first.strftime(\"%Y-%m-%d %H:%M\")}')
-    print(f'Last:  {last.strftime(\"%Y-%m-%d %H:%M\")}')
-except: pass
+if limit > 0:
+    entries = entries[-limit:]
 
-# Average length
-avg_len = sum(len(e.get('text','')) for e in entries) / len(entries)
-print(f'Average bubble length: {avg_len:.0f} chars')
+for entry in entries:
+    ts = entry.get("timestamp", "")
+    try:
+        ts_str = datetime.fromisoformat(ts).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        ts_str = ts[:16]
+    name = entry.get("companion", "Glimmer")
+    text = entry.get("text", "")
+    print(f'  \033[2m{ts_str}\033[0m  \033[1;35m{name}\033[0m')
+    print(f'  \033[3m"{text}"\033[0m')
+    print()
+PY
+}
 
-# Longest
-longest = max(entries, key=lambda e: len(e.get('text','')))
-preview = longest['text'][:80]
-suffix = '...' if len(longest['text']) > 80 else ''
-print(f'Longest: "{preview}{suffix}"')
+view_sessions() {
+    local session_ref="${1:-}"
+    python3 - "$EVENTSFILE" "$SESSIONS_DIR" "$session_ref" <<'PY'
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+import json
+import sys
+
+eventsfile = Path(sys.argv[1])
+sessions_dir = Path(sys.argv[2])
+session_ref = sys.argv[3] or None
+
+
+def parse_ts(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def format_ts(value: str | None, fallback: str = "") -> str:
+    dt = parse_ts(value)
+    if dt is None:
+        return fallback or (value or "")
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+events = []
+if eventsfile.exists():
+    for line in eventsfile.read_text(encoding="utf-8").splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+
+entries_by_session: dict[str, list[dict]] = defaultdict(list)
+for entry in events:
+    session_id = entry.get("session_id")
+    if session_id:
+        entries_by_session[session_id].append(entry)
+
+manifests: dict[str, dict] = {}
+if sessions_dir.exists():
+    for manifest_path in sorted(sessions_dir.glob("*.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(manifest, dict):
+            session_id = manifest.get("session_id") or manifest_path.stem
+            manifests[session_id] = manifest
+
+session_ids = set(entries_by_session)
+session_ids.update(manifests)
+
+if not session_ref:
+    if not session_ids:
+        print("No session-aware entries yet.")
+        sys.exit(0)
+
+    def sort_key(session_id: str):
+        manifest = manifests.get(session_id, {})
+        started = parse_ts(manifest.get("started_at"))
+        if started is not None:
+            return started
+        matching = [parse_ts(entry.get("timestamp")) for entry in entries_by_session.get(session_id, [])]
+        matching = [dt for dt in matching if dt is not None]
+        if matching:
+            return max(matching)
+        return datetime.min
+
+    sorted_ids = sorted(session_ids, key=sort_key, reverse=True)
+    latest_id = sorted_ids[0]
+    for session_id in sorted_ids:
+        manifest = manifests.get(session_id, {})
+        session_entries = entries_by_session.get(session_id, [])
+        started_at = manifest.get("started_at") or (
+            session_entries[0].get("timestamp") if session_entries else ""
+        )
+        ended_at = manifest.get("ended_at")
+        companion = manifest.get("companion") or (
+            session_entries[0].get("companion", "Glimmer") if session_entries else "Glimmer"
+        )
+        latest_mark = "  latest" if session_id == latest_id else ""
+        state = "open" if not ended_at else f"ended {format_ts(ended_at)}"
+        print(f"{format_ts(started_at, session_id)}  {session_id}{latest_mark}")
+        print(f"  {companion}  {len(session_entries)} bubbles  {state}")
+    sys.exit(0)
+
+if not session_ids:
+    print("No session-aware entries yet.")
+    sys.exit(0)
+
+if session_ref == "latest":
+    def sort_key(session_id: str):
+        manifest = manifests.get(session_id, {})
+        started = parse_ts(manifest.get("started_at"))
+        if started is not None:
+            return started
+        matching = [parse_ts(entry.get("timestamp")) for entry in entries_by_session.get(session_id, [])]
+        matching = [dt for dt in matching if dt is not None]
+        if matching:
+            return max(matching)
+        return datetime.min
+
+    session_id = max(session_ids, key=sort_key)
+else:
+    session_id = session_ref
+
+if session_id not in session_ids:
+    print(f"Session not found: {session_ref}", file=sys.stderr)
+    sys.exit(1)
+
+manifest = manifests.get(session_id, {})
+entries = entries_by_session.get(session_id, [])
+started_at = manifest.get("started_at") or (entries[0].get("timestamp") if entries else "")
+ended_at = manifest.get("ended_at")
+companion = manifest.get("companion") or (entries[0].get("companion") if entries else "Glimmer")
+raw_path = manifest.get("raw_path") or (entries[0].get("raw_path") if entries else "")
+
+print(f"Session: {session_id}")
+print(f"Companion: {companion}")
+print(f"Started: {format_ts(started_at, 'unknown')}")
+print(f"Ended: {format_ts(ended_at, 'open') if ended_at else 'open'}")
+print(f"Bubbles: {len(entries)}")
+if raw_path:
+    print(f"Raw: {raw_path}")
+print()
+
+for entry in entries:
+    ts = entry.get("timestamp", "")
+    ts_str = format_ts(ts, ts[:16])
+    header = f'  \033[2m{ts_str}\033[0m  \033[1;35m{entry.get("companion", "Glimmer")}\033[0m'
+    if entry.get("bubble_seq") is not None:
+        header += f'  \033[2m#{entry["bubble_seq"]}\033[0m'
+    if entry.get("trigger_type") and entry.get("trigger_type") != "unknown":
+        header += f'  \033[2m[{entry["trigger_type"]}]\033[0m'
+    print(header)
+    print(f'  \033[3m"{entry.get("text", "")}"\033[0m')
+    print()
 PY
 }
 
@@ -113,54 +248,89 @@ import sys
 
 logfile, timestamp, text = sys.argv[1:4]
 entry = {
-    'timestamp': timestamp,
-    'companion': 'Glimmer',
-    'text': text,
-    'source': 'manual',
+    "timestamp": timestamp,
+    "companion": "Glimmer",
+    "text": text,
 }
-with open(logfile, 'a', encoding='utf-8') as handle:
-    handle.write(json.dumps(entry, ensure_ascii=False) + '\n')
-print('Added.')
+with open(logfile, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+print("Added.")
 PY
 }
 
-case "${1:-}" in
-    --json)
-        require_logfile
-        cat "$LOGFILE"
-        ;;
-    --stats)
-        require_logfile
-        show_stats
-        ;;
-    -n)
-        require_logfile
-        if ! [[ "${2:-10}" =~ ^[0-9]+$ ]]; then
-            echo "Error: -n expects a non-negative integer." >&2
+show_help() {
+    echo "Usage: glimmer-log [OPTIONS]"
+    echo ""
+    echo "  (no args)         Show all captured bubbles"
+    echo "  -n NUM            Show last NUM bubbles"
+    echo "  --session ID      Show bubbles from a specific session"
+    echo "  --session latest  Show the newest session"
+    echo "  --sessions        List known sessions"
+    echo "  --add \"text\"      Manually add a bubble"
+    echo "  --json            Raw legacy JSONL output"
+    echo "  --stats           Show legacy log statistics"
+    echo "  -h, --help        Show this help"
+}
+
+MODE="pretty"
+LIMIT=0
+SESSION_REF=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --json)
+            MODE="json"
+            shift
+            ;;
+        --stats)
+            MODE="stats"
+            shift
+            ;;
+        --sessions)
+            MODE="sessions"
+            shift
+            ;;
+        --session)
+            if [ $# -lt 2 ] || [ -z "${2:-}" ]; then
+                echo "Usage: glimmer-log --session <id|latest>" >&2
+                exit 1
+            fi
+            SESSION_REF="$2"
+            shift 2
+            ;;
+        -n)
+            if ! [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+                echo "Error: -n expects a non-negative integer." >&2
+                exit 1
+            fi
+            LIMIT="$2"
+            shift 2
+            ;;
+        --add)
+            shift
+            if [ -z "${1:-}" ]; then
+                echo "Usage: glimmer-log --add \"bubble text here\"" >&2
+                exit 1
+            fi
+            add_bubble "$*"
+            exit 0
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            show_help >&2
             exit 1
-        fi
-        show_pretty "${2:-10}"
-        ;;
-    --add)
-        shift
-        if [ -z "${1:-}" ]; then
-            echo "Usage: glimmer-log --add \"bubble text here\""
-            exit 1
-        fi
-        add_bubble "$*"
-        ;;
-    -h|--help)
-        echo "Usage: glimmer-log [OPTIONS]"
-        echo ""
-        echo "  (no args)        Show all captured bubbles"
-        echo "  -n NUM           Show last NUM bubbles"
-        echo "  --add \"text\"     Manually add a bubble"
-        echo "  --json           Raw JSONL output"
-        echo "  --stats          Show statistics"
-        echo "  -h, --help       Show this help"
-        ;;
-    *)
-        require_logfile
-        show_pretty 0
-        ;;
-esac
+            ;;
+    esac
+done
+
+if [ -n "$SESSION_REF" ] || [ "$MODE" = "sessions" ]; then
+    view_sessions "$SESSION_REF"
+    exit 0
+fi
+
+require_logfile
+view_legacy "$MODE" "$LIMIT"

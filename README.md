@@ -12,6 +12,8 @@ When you use Claude Code with Glimmer enabled, it:
 - **Watches** your Claude Code terminal in real-time
 - **Detects** speech bubbles from your buddy companion
 - **Logs** them instantly with timestamps
+- **Groups** auto-captured bubbles by Claude session
+- **Tags** exact `/buddy pet` reactions and best-effort post-prompt bubbles
 - **Lets you view** them anytime with a simple command
 
 It's like having a journal of your buddy's wisest, funniest, and most helpful comments.
@@ -57,6 +59,12 @@ glimmer-log
 # See the last 10
 glimmer-log -n 10
 
+# List session-aware runs
+glimmer-log --sessions
+
+# Open the newest session
+glimmer-log --session latest
+
 # Get stats
 glimmer-log --stats
 
@@ -79,12 +87,33 @@ All bubbles are saved locally in:
 ~/.claude/glimmer/log.jsonl
 ```
 
-Each entry looks like:
+`log.jsonl` stays simple for compatibility:
 ```json
 {
   "timestamp": "2026-04-03T14:22:15+00:00",
   "companion": "Glimmer",
   "text": "Your buddy said something witty here"
+}
+```
+
+Session metadata and trigger tagging are stored separately in:
+```
+~/.claude/glimmer/events.jsonl
+~/.claude/glimmer/sessions/
+```
+
+An event entry looks like:
+```json
+{
+  "timestamp": "2026-04-03T14:22:15+00:00",
+  "companion": "Glimmer",
+  "text": "Your buddy said something witty here",
+  "source": "auto",
+  "session_id": "20260403-142215-12345",
+  "bubble_seq": 4,
+  "trigger_type": "buddy_pet",
+  "trigger_confidence": "exact",
+  "trigger_text": "/buddy pet"
 }
 ```
 
@@ -95,8 +124,8 @@ Each entry looks like:
 ## 🔧 How It Works
 
 - **`glimmer-claude`** — Wrapper that runs Claude Code and pipes output to the watcher
-- **`glimmer-watcher.py`** — Tails your session in real-time, detects rounded-box bubbles, logs unique ones
-- **`glimmer-log`** — Reader that displays, searches, and exports your captured bubbles
+- **`glimmer-watcher.py`** — Tails your session in real-time, keeps `log.jsonl` simple, writes session metadata separately
+- **`glimmer-log`** — Reader that displays bubbles across all time or grouped by session
 
 ---
 
@@ -107,21 +136,37 @@ Each entry looks like:
 $ glimmer-claude
 Starting Claude Code with Glimmer logging...
   Companion: Glimmer
+  Session:   20260403-142215-12345
   Log file:  ~/.claude/glimmer/log.jsonl
 ```
 
 ### Later, relive the memories
 ```bash
-$ glimmer-log
+$ glimmer-log --session latest
 
-  2026-04-03 14:22  Glimmer
+Session: 20260403-142215-12345
+Companion: Glimmer
+Started: 2026-04-03 14:22
+Ended: 2026-04-03 14:30
+Bubbles: 3
+
+  2026-04-03 14:22  Glimmer  #1
   "You're overthinking this. Just ship it."
 
-  2026-04-03 14:25  Glimmer
+  2026-04-03 14:25  Glimmer  #2
   "That's a clever approach to the race condition."
 
-  2026-04-03 14:30  Glimmer
+  2026-04-03 14:30  Glimmer  #3
   "Remember to test the edge case where the user has no permissions."
+```
+
+### See all known sessions
+```bash
+$ glimmer-log --sessions
+2026-04-03 14:22  20260403-142215-12345  latest
+  Glimmer  3 bubbles  ended 2026-04-03 14:30
+
+Legacy entries without session metadata: 42
 ```
 
 ### Get stats on what your buddy says
@@ -140,6 +185,8 @@ Longest: "This is a really detailed explanation of why your approach..."
 
 ✅ **Real-time capture** — Bubbles logged as they appear  
 ✅ **Deduplication** — Won't log the same bubble twice  
+✅ **Session-aware** — New runs get their own session IDs and manifests  
+✅ **Trigger tagging** — Exact `/buddy pet` and best-effort post-prompt attribution  
 ✅ **Lightweight** — ~300 lines of Python, minimal dependencies  
 ✅ **Privacy-first** — All data stays local  
 ✅ **Simple** — Just 3 scripts, no bloat  
