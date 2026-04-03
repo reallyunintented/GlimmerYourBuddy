@@ -80,12 +80,22 @@ glimmer-log --grep patience
 glimmer-log --cleanup-raw
 glimmer-log --cleanup-raw 30
 
+# Open the local archive app
+glimmer-ui
+
 # Get stats
 glimmer-log --stats
 
 # Raw JSON (for processing)
 glimmer-log --json
 ```
+
+### Browse Them Visually
+```bash
+glimmer-ui
+```
+
+That opens a small local app for browsing recent bubbles, projects, sessions, and search. It reads your existing local Glimmer files and does not upload anything.
 
 ### Watcher Debug Output
 By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.

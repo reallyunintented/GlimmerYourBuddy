@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Glimmer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">G</div>
+        <div>
+          <h1>Glimmer</h1>
+          <p>Local bubble archive</p>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-link is-active" data-view="recent">Recent</button>
+        <button class="nav-link" data-view="projects">Projects</button>
+        <button class="nav-link" data-view="sessions">Sessions</button>
+        <button class="nav-link" data-view="search">Search</button>
+      </nav>
+
+      <section class="overview" id="overview"></section>
+
+      <div class="sidebar-footer">
+        <button id="refresh-button" class="secondary-button">Refresh</button>
+        <p id="generated-at" class="muted"></p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="toolbar">
+        <div class="toolbar-copy">
+          <p class="eyebrow" id="view-eyebrow">Recent bubbles</p>
+          <h2 id="view-title">Recent</h2>
+          <p class="toolbar-note">Browse your local archive by bubble, project, session, or search.</p>
+        </div>
+        <label class="search-shell">
+          <span>Search</span>
+          <input id="search-input" type="search" placeholder="Find a line again…">
+        </label>
+      </header>
+
+      <section id="main-content" class="main-content"></section>
+    </main>
+
+    <aside class="detail" id="detail"></aside>
+  </div>
+
+  <template id="empty-state-template">
+    <section class="empty-state">
+      <h3></h3>
+      <p></p>
+    </section>
+  </template>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

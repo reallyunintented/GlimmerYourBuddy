@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""
+glimmer-ui — Local read-only browser for Glimmer bubbles.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import mimetypes
+import os
+import webbrowser
+from collections import defaultdict
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+DEFAULT_GLIMMER_DIR = Path(
+    os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer")
+)
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def timestamp_sort_key(value: str | None) -> tuple[int, str]:
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return (0, value or "")
+    return (1, parsed.isoformat())
+
+
+def truncate_text(value: str | None, limit: int = 100) -> str:
+    text = (value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def load_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    entries = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            entries.append(parsed)
+    return entries
+
+
+def load_manifests(path: Path) -> dict[str, dict]:
+    manifests: dict[str, dict] = {}
+    if not path.exists():
+        return manifests
+    for manifest_path in sorted(path.glob("*.json")):
+        try:
+            parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        session_id = parsed.get("session_id") or manifest_path.stem
+        manifests[session_id] = parsed
+    return manifests
+
+
+def bubble_id(entry: dict) -> str:
+    raw = "|".join(
+        [
+            entry.get("timestamp") or "",
+            entry.get("session_id") or "",
+            str(entry.get("bubble_seq") or ""),
+            entry.get("companion") or "",
+            entry.get("text") or "",
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_bubble(entry: dict, source: str) -> dict:
+    normalized = {
+        "timestamp": entry.get("timestamp"),
+        "companion": entry.get("companion") or "Glimmer",
+        "text": entry.get("text") or "",
+        "source": entry.get("source") or source,
+        "session_id": entry.get("session_id"),
+        "bubble_seq": entry.get("bubble_seq"),
+        "trigger_type": entry.get("trigger_type"),
+        "trigger_confidence": entry.get("trigger_confidence"),
+        "trigger_text": entry.get("trigger_text"),
+        "cwd": entry.get("cwd"),
+        "project_root": entry.get("project_root"),
+        "project_name": entry.get("project_name"),
+        "git_branch": entry.get("git_branch"),
+        "is_repo_root": entry.get("is_repo_root"),
+        "raw_path": entry.get("raw_path"),
+    }
+    normalized["id"] = bubble_id(normalized)
+    normalized["preview"] = truncate_text(normalized["text"], 120)
+    return normalized
+
+
+def session_field(manifest: dict, bubbles: list[dict], key: str):
+    if key in manifest:
+        return manifest.get(key)
+    if bubbles:
+        return bubbles[0].get(key)
+    return None
+
+
+def bubble_sort_desc(entry: dict) -> tuple[tuple[int, str], str]:
+    return (timestamp_sort_key(entry.get("timestamp")), entry.get("id", ""))
+
+
+def bubble_sort_session(entry: dict) -> tuple[int, tuple[int, str], str]:
+    bubble_seq = entry.get("bubble_seq")
+    if isinstance(bubble_seq, int):
+        return (0, (1, f"{bubble_seq:09d}"), entry.get("id", ""))
+    return (1, timestamp_sort_key(entry.get("timestamp")), entry.get("id", ""))
+
+
+def dedupe_bubbles(events: list[dict], legacy: list[dict]) -> list[dict]:
+    normalized_events = [normalize_bubble(entry, "auto") for entry in events]
+    event_keys = {
+        (
+            entry.get("timestamp"),
+            entry.get("companion"),
+            entry.get("text"),
+        )
+        for entry in events
+    }
+
+    bubbles = list(normalized_events)
+    for entry in legacy:
+        key = (
+            entry.get("timestamp"),
+            entry.get("companion"),
+            entry.get("text"),
+        )
+        if key in event_keys:
+            continue
+        bubbles.append(normalize_bubble(entry, entry.get("source") or "legacy"))
+
+    bubbles.sort(key=bubble_sort_desc, reverse=True)
+    return bubbles
+
+
+def build_sessions(events: list[dict], manifests: dict[str, dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for entry in events:
+        session_id = entry.get("session_id")
+        if not session_id:
+            continue
+        grouped[session_id].append(normalize_bubble(entry, "auto"))
+
+    sessions = []
+    for session_id in set(grouped) | set(manifests):
+        manifest = manifests.get(session_id, {})
+        bubbles = sorted(grouped.get(session_id, []), key=bubble_sort_session)
+        latest = bubbles[-1] if bubbles else None
+        started_at = session_field(manifest, bubbles, "started_at") or (
+            bubbles[0].get("timestamp") if bubbles else None
+        )
+        ended_at = session_field(manifest, bubbles, "ended_at")
+        project_name = session_field(manifest, bubbles, "project_name")
+        latest_seen = latest.get("timestamp") if latest else started_at
+        sessions.append(
+            {
+                "session_id": session_id,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "companion": session_field(manifest, bubbles, "companion")
+                or "Glimmer",
+                "raw_path": session_field(manifest, bubbles, "raw_path"),
+                "cwd": session_field(manifest, bubbles, "cwd"),
+                "project_root": session_field(manifest, bubbles, "project_root"),
+                "project_name": project_name,
+                "project_label": project_name or "No Project",
+                "git_branch": session_field(manifest, bubbles, "git_branch"),
+                "is_repo_root": bool(session_field(manifest, bubbles, "is_repo_root")),
+                "bubble_count": len(bubbles),
+                "latest_bubble_preview": latest.get("preview") if latest else "",
+                "latest_bubble_at": latest_seen,
+                "bubbles": bubbles,
+            }
+        )
+
+    sessions.sort(
+        key=lambda entry: (
+            timestamp_sort_key(entry.get("started_at")),
+            entry.get("session_id", ""),
+        ),
+        reverse=True,
+    )
+    return sessions
+
+
+def build_projects(sessions: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for session in sessions:
+        grouped[session.get("project_label") or "No Project"].append(session)
+
+    projects = []
+    for project_label, project_sessions in grouped.items():
+        sorted_sessions = sorted(
+            project_sessions,
+            key=lambda entry: (
+                timestamp_sort_key(
+                    entry.get("latest_bubble_at") or entry.get("started_at")
+                ),
+                entry.get("session_id", ""),
+            ),
+            reverse=True,
+        )
+        latest = sorted_sessions[0]
+        branches = sorted(
+            {
+                session.get("git_branch")
+                for session in sorted_sessions
+                if session.get("git_branch")
+            }
+        )
+        projects.append(
+            {
+                "project_key": project_label,
+                "project_name": latest.get("project_name"),
+                "project_label": project_label,
+                "bubble_count": sum(
+                    session.get("bubble_count", 0) for session in sorted_sessions
+                ),
+                "session_count": len(sorted_sessions),
+                "last_seen_at": latest.get("latest_bubble_at")
+                or latest.get("started_at"),
+                "latest_bubble_preview": latest.get("latest_bubble_preview", ""),
+                "latest_session_id": latest.get("session_id"),
+                "branches": branches,
+            }
+        )
+
+    projects.sort(
+        key=lambda entry: (
+            timestamp_sort_key(entry.get("last_seen_at")),
+            entry.get("project_label", ""),
+        ),
+        reverse=True,
+    )
+    return projects
+
+
+def build_index(glimmer_dir: Path) -> dict:
+    log_entries = load_jsonl(glimmer_dir / "log.jsonl")
+    event_entries = load_jsonl(glimmer_dir / "events.jsonl")
+    manifests = load_manifests(glimmer_dir / "sessions")
+
+    bubbles = dedupe_bubbles(event_entries, log_entries)
+    sessions = build_sessions(event_entries, manifests)
+    projects = build_projects(sessions)
+
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "glimmer_dir": str(glimmer_dir),
+        "overview": {
+            "bubble_count": len(bubbles),
+            "session_count": len(sessions),
+            "project_count": len(projects),
+        },
+        "bubbles": bubbles,
+        "sessions": sessions,
+        "projects": projects,
+    }
+
+
+def resolve_ui_dir(script_path: Path) -> Path:
+    env_dir = os.environ.get("GLIMMER_UI_STATIC_DIR")
+    if env_dir:
+        return Path(env_dir)
+
+    local_dir = script_path.resolve().parent / "ui"
+    if local_dir.exists():
+        return local_dir
+
+    return Path.home() / ".local" / "share" / "glimmer" / "ui"
+
+
+class GlimmerUIHandler(BaseHTTPRequestHandler):
+    server_version = "GlimmerUI/0.1"
+
+    def log_message(self, _format: str, *_args) -> None:  # noqa: A003
+        return
+
+    @property
+    def config(self) -> dict:
+        return self.server.config  # type: ignore[attr-defined]
+
+    def send_json(self, payload: dict | list, status: int = 200) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def send_file(self, path: Path) -> None:
+        if not path.exists() or not path.is_file():
+            self.send_error(404)
+            return
+
+        content = path.read_bytes()
+        content_type, _ = mimetypes.guess_type(path.name)
+        self.send_response(200)
+        self.send_header("Content-Type", content_type or "application/octet-stream")
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(content)
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/health":
+            self.send_json({"ok": True})
+            return
+
+        if parsed.path == "/api/index":
+            self.send_json(build_index(self.config["glimmer_dir"]))
+            return
+
+        if parsed.path in {"", "/"}:
+            self.send_file(self.config["ui_dir"] / "index.html")
+            return
+
+        asset_path = (self.config["ui_dir"] / parsed.path.lstrip("/")).resolve()
+        ui_root = self.config["ui_dir"].resolve()
+        if ui_root in asset_path.parents or asset_path == ui_root:
+            self.send_file(asset_path)
+            return
+
+        self.send_error(404)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the local Glimmer UI.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument("--glimmer-dir", default=str(DEFAULT_GLIMMER_DIR))
+    parser.add_argument("--no-open", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    glimmer_dir = Path(args.glimmer_dir).expanduser()
+    ui_dir = resolve_ui_dir(Path(__file__))
+    if not ui_dir.exists():
+        raise SystemExit(f"UI assets not found: {ui_dir}")
+
+    server = ThreadingHTTPServer((args.host, args.port), GlimmerUIHandler)
+    server.config = {  # type: ignore[attr-defined]
+        "glimmer_dir": glimmer_dir,
+        "ui_dir": ui_dir,
+    }
+    url = f"http://{args.host}:{server.server_port}/"
+    print(f"Glimmer UI running at {url}")
+    print(f"Reading data from {glimmer_dir}")
+    if not args.no_open:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
