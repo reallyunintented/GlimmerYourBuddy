@@ -36,13 +36,36 @@ cd GlimmerYourBuddy
 
 This keeps the install reviewable before anything lands in `~/.local/bin`.
 
-### Fast Install (Pinned Commit)
+### Verified Release Install
+Download a tagged release source archive plus its checksum assets, then verify before installing:
+```bash
+tar -xzf GlimmerYourBuddy-vX.Y.Z.tar.gz
+cd GlimmerYourBuddy-vX.Y.Z
+
+cosign verify-blob \
+  --certificate SHA256SUMS.txt.pem \
+  --signature SHA256SUMS.txt.sig \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/reallyunintented/GlimmerYourBuddy/.github/workflows/release.yml@refs/tags/vX\.Y\.Z$' \
+  SHA256SUMS.txt
+
+sha256sum -c SHA256SUMS.txt
+./install.sh
+```
+
+If your system does not have `sha256sum`, use `shasum -a 256 -c SHA256SUMS.txt` instead.
+
+### Remote Bootstrap (Higher Risk)
 ```bash
 export GLIMMER_REF=abbedf7faec3d07d024ad30b3aa5577ddb9a3535
 curl -sSL "https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/${GLIMMER_REF}/install.sh" | bash
 ```
 
 If you use the remote installer, pin the commit. Pulling installer files from a mutable branch is convenient, but it is also a supply-chain footgun.
+
+This bootstrap path is still less trustworthy than a reviewed clone or a verified release, because the installer you are piping into `bash` is already running before any later file verification can happen.
+
+Tagged releases can publish `SHA256SUMS.txt` plus a Sigstore signature and certificate for verification. If you install from a release, prefer the tag plus those release assets over a floating branch.
 
 The installer downloads the Glimmer launchers into `~/.local/bin` and installs the local UI assets into `~/.local/share/glimmer/`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
 ```bash
@@ -122,6 +145,14 @@ That opens a small local app for browsing recent bubbles, mattered bubbles, the 
 The UI also has a `Brief` view: a compact "before you begin" panel that pulls the top mattered bubbles, open items, and recurring signals for a project, with copy buttons for plain text or markdown agent context.
 
 `glimmer-ui` binds to `127.0.0.1` by default. Keep it on loopback unless you intentionally proxy or expose it yourself.
+
+If you deliberately expose it, Glimmer now requires HTTP Basic auth for non-loopback binds. Set a password first:
+```bash
+export GLIMMER_UI_AUTH_TOKEN="$(openssl rand -hex 24)"
+glimmer-ui --host 0.0.0.0 --allow-remote
+```
+
+Then connect with username `glimmer` and that password, or change the username with `--auth-user`.
 
 See [`SECURITY.md`](SECURITY.md) for the current threat model and operational guidance.
 

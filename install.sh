@@ -30,6 +30,8 @@ Warning: remote install is using the mutable 'main' branch.
 Prefer a pinned commit for remote installs:
   GLIMMER_REF=<commit> bash install.sh
 or clone the repo and run ./install.sh locally after inspection.
+For the strongest path, install from a tagged release after verifying
+SHA256SUMS.txt with the published Sigstore signature and certificate.
 EOF
     REMOTE_WARNING_SHOWN=1
 }

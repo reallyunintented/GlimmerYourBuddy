@@ -19,6 +19,9 @@ The current baseline is:
 - non-loopback binds require `--allow-remote`
 - browser POST requests are restricted to same-origin requests
 - mutable archive files use atomic replace-on-write updates
+- mutable archive files use advisory locking on write paths
+- non-loopback UI binds require HTTP Basic auth
+- tag releases can publish checksums plus a Sigstore-signed checksum manifest
 
 ## What To Report
 
@@ -42,7 +45,9 @@ The following are not security guarantees:
 ## Operational Guidance
 
 - Prefer `git clone` plus local review before install.
+- Prefer tagged releases with `SHA256SUMS.txt`, `SHA256SUMS.txt.sig`, and `SHA256SUMS.txt.pem` once you start publishing releases.
 - If you use remote install, pin `GLIMMER_REF` to a commit.
+- Treat `curl | bash` as a convenience bootstrap, not a cryptographically self-verifying install path.
 - Use `GLIMMER_KEEP_RAW=0` if you do not want raw `script` transcripts retained.
 - If you expose `glimmer-ui` remotely, put it behind your own authentication and network controls.
 

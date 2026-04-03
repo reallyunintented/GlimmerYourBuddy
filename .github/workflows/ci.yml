@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Shell syntax
-        run: bash -n glimmer-claude glimmer-log install.sh
+        run: bash -n glimmer-claude glimmer-log install.sh scripts/build-release-checksums.sh
 
       - name: Python tests
         run: python3 -m unittest discover -s tests -q
