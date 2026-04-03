@@ -123,6 +123,8 @@ The UI also has a `Brief` view: a compact "before you begin" panel that pulls th
 
 `glimmer-ui` binds to `127.0.0.1` by default. Keep it on loopback unless you intentionally proxy or expose it yourself.
 
+See [`SECURITY.md`](SECURITY.md) for the current threat model and operational guidance.
+
 ### Use the Local API
 When `glimmer-ui` is running, it also exposes a small localhost JSON API:
 
@@ -460,6 +462,8 @@ Some ideas:
 ## 📄 License
 
 MIT — Use it, modify it, share it. Your buddy would approve.
+
+Full license text lives in [`LICENSE`](LICENSE).
 
 ---
 
