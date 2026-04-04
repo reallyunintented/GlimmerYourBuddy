@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Glimmer MCP server — 5 read-only tools over stdio."""
 
+from __future__ import annotations
+
 import importlib.util
 import json
 import os
@@ -23,11 +25,11 @@ _loader.exec_module(_ui)
 # Glimmer directory & index helper
 # ---------------------------------------------------------------------------
 
-_GLIMMER_DIR = Path(os.environ.get("GLIMMER_DIR", Path.home() / ".claude" / "glimmer"))
+DEFAULT_GLIMMER_DIR = Path(os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer"))
 
 
 def _build_index() -> dict:
-    return _ui.build_index(_GLIMMER_DIR)
+    return _ui.build_index(DEFAULT_GLIMMER_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +57,7 @@ def _tool_search_bubbles(index, query, mattered_only=False):
 
 
 def _tool_get_bubble(index, bubble_id):
-    result = _ui.build_bubble_view(index, bubble_id)
-    if result is None:
-        return {"error": "Bubble not found"}
-    return result
+    return _ui.build_bubble_view(index, bubble_id)
 
 
 # ---------------------------------------------------------------------------
@@ -113,11 +112,10 @@ def search_bubbles(query: str, mattered_only: bool = False) -> str:
 def get_bubble(bubble_id: str) -> str:
     """Get a single bubble by ID, including session and project context."""
     index = _build_index()
-    return json.dumps(
-        _tool_get_bubble(index, bubble_id),
-        ensure_ascii=False,
-        indent=2,
-    )
+    result = _tool_get_bubble(index, bubble_id)
+    if result is None:
+        return json.dumps({"error": "Bubble not found"})
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
