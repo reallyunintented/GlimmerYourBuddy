@@ -178,6 +178,35 @@ Current routes:
 
 This API is local-only and meant to support the UI first. It is also the foundation for future agent integrations.
 
+### Use as an MCP Server
+Glimmer includes a read-only MCP server so Claude Code agents can query your archive directly.
+
+Requires the `mcp` Python package:
+```bash
+pip install mcp
+```
+
+Add to `~/.claude/settings.json`:
+```json
+{
+  "mcpServers": {
+    "glimmer": {
+      "command": "glimmer-mcp",
+      "type": "stdio"
+    }
+  }
+}
+```
+
+Available tools:
+- `get_brief` — Project brief with top mattered bubbles, open items, and recurring signals
+- `list_mattered` — All mattered bubbles with counts by review state
+- `get_review` — Mattered bubbles grouped by review state plus resurface hints
+- `search_bubbles` — Case-insensitive search across bubble text, notes, and metadata
+- `get_bubble` — Full detail for a single bubble including session and project context
+
+All tools are read-only. Your archive is never modified by agent queries.
+
 ### Start With a Brief
 If you want a small project-specific memory snapshot before a session starts, you now have three paths:
 

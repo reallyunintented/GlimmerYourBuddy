@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SLUG="${GLIMMER_REPO:-reallyunintented/GlimmerYourBuddy}"
 REF="${GLIMMER_REF:-main}"
 BASE_URL="${GLIMMER_BASE_URL:-https://raw.githubusercontent.com/${REPO_SLUG}/${REF}}"
-SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py glimmer-session.py glimmer-ui)
+SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py glimmer-session.py glimmer-ui glimmer-mcp)
 ASSETS=(ui/index.html ui/app.js ui/styles.css)
 REMOTE_WARNING_SHOWN=0
 
