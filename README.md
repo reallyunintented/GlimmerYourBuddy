@@ -1,8 +1,10 @@
 # ✨ Glimmer — Local Significance Archive for Claude Buddy Bubbles
 
-Glimmer captures Claude Code buddy speech bubbles and keeps them in a local archive with session context, explicit mattered signals, and a lightweight review loop.
+> *hovers closer, squinting at the README* Building a museum of me. Meta enough?
 
-No screenshots. No copying. Just a usable history.
+Your Claude Code buddy says things in speech bubbles — small observations, code hints, reactions — and then they scroll away. Glimmer catches them before they disappear.
+
+It keeps a local archive with session context, mattered signals, and a review loop. No screenshots. No copying. No uploading. Just a usable history of the moments that actually changed the work.
 
 ---
 
@@ -36,7 +38,9 @@ cd GlimmerYourBuddy
 
 This keeps the install reviewable before anything lands in `~/.local/bin`.
 
-### Verified Release Install
+<details>
+<summary><strong>Verified Release Install</strong></summary>
+
 Download a tagged release source archive plus its checksum assets, then verify before installing:
 ```bash
 tar -xzf GlimmerYourBuddy-vX.Y.Z.tar.gz
@@ -54,20 +58,20 @@ sha256sum -c SHA256SUMS.txt
 ```
 
 If your system does not have `sha256sum`, use `shasum -a 256 -c SHA256SUMS.txt` instead.
+</details>
 
-### Remote Bootstrap (Higher Risk)
+<details>
+<summary><strong>Remote Bootstrap (Higher Risk)</strong></summary>
+
 ```bash
 export GLIMMER_REF=abbedf7faec3d07d024ad30b3aa5577ddb9a3535
 curl -sSL "https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/${GLIMMER_REF}/install.sh" | bash
 ```
 
-If you use the remote installer, pin the commit. Pulling installer files from a mutable branch is convenient, but it is also a supply-chain footgun.
+Pin the commit. Pulling installer files from a mutable branch is a supply-chain footgun. This path is less trustworthy than a reviewed clone or verified release — the installer runs before any file verification can happen.
+</details>
 
-This bootstrap path is still less trustworthy than a reviewed clone or a verified release, because the installer you are piping into `bash` is already running before any later file verification can happen.
-
-Tagged releases can publish `SHA256SUMS.txt` plus a Sigstore signature and certificate for verification. If you install from a release, prefer the tag plus those release assets over a floating branch.
-
-The installer downloads the Glimmer launchers into `~/.local/bin` and installs the local UI assets into `~/.local/share/glimmer/`. Then make sure `~/.local/bin` is in your `$PATH`. If you see a warning, add this to `~/.bashrc` or `~/.zshrc`:
+The installer puts launchers into `~/.local/bin` and UI assets into `~/.local/share/glimmer/`. Make sure `~/.local/bin` is in your `$PATH`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -255,137 +259,31 @@ Manual adds use your configured Claude companion name when available.
 
 ## 💾 Where It's Stored
 
-Glimmer writes a few local files on purpose. They have different jobs.
+Everything lives under `~/.claude/glimmer/`. Nothing leaves your machine.
 
-Newer Glimmer builds tighten permissions on archive files and directories so they stay user-only by default where possible.
-
-### `~/.claude/glimmer/log.jsonl`
-This is the compatibility log. It is the main "plain bubble history" file.
-
-Each line is a simple JSON object:
-```json
-{
-  "timestamp": "2026-04-03T14:22:15+00:00",
-  "companion": "Glimmer",
-  "text": "Your buddy said something witty here"
-}
 ```
-
-This file is meant to stay simple and stable. It is what `glimmer-log`, `glimmer-log -n`, `glimmer-log --json`, and `glimmer-log --stats` use for the all-time view.
-
-### `~/.claude/glimmer/events.jsonl`
-This is the richer sidecar event log for auto-captured bubbles.
-
-It stores session metadata and trigger tagging without polluting `log.jsonl`:
-```json
-{
-  "timestamp": "2026-04-03T14:22:15+00:00",
-  "companion": "Glimmer",
-  "text": "Your buddy said something witty here",
-  "source": "auto",
-  "session_id": "20260403-142215-12345",
-  "cwd": "/home/user/src/GlimmerYourBuddy",
-  "project_root": "/home/user/src/GlimmerYourBuddy",
-  "project_name": "GlimmerYourBuddy",
-  "git_branch": "main",
-  "is_repo_root": true,
-  "bubble_seq": 4,
-  "trigger_type": "buddy_pet",
-  "trigger_confidence": "exact",
-  "trigger_text": "/buddy pet"
-}
-```
-
-This file is what `glimmer-log --sessions` and `glimmer-log --session ...` use.
-
-### `~/.claude/glimmer/sessions/`
-This directory holds one manifest per Claude run:
-```json
-{
-  "session_id": "20260403-142215-12345",
-  "started_at": "2026-04-03T14:22:15+00:00",
-  "ended_at": "2026-04-03T14:30:02+00:00",
-  "companion": "Glimmer",
-  "raw_path": "/home/user/.claude/glimmer/raw/session-20260403-142215-12345.raw",
-  "cwd": "/home/user/src/GlimmerYourBuddy",
-  "project_root": "/home/user/src/GlimmerYourBuddy",
-  "project_name": "GlimmerYourBuddy",
-  "git_branch": "main",
-  "is_repo_root": true,
-  "argv": ["claude"]
-}
-```
-
-These manifests let Glimmer list sessions even if a run had zero captured bubbles.
-
-### `~/.claude/glimmer/raw/`
-This directory holds the raw terminal capture from `script`.
-
-Glimmer does not show these files in normal use, but they are the source material the watcher parses.
-
-### `~/.claude/glimmer/watcher.log`
-This is the watcher's own debug log.
-
-The watcher writes its internal status here instead of printing into Claude's fullscreen UI by default.
-
-### `~/.claude/glimmer/mattered.json`
-This stores explicit mattered marks, optional notes, and review metadata from the local archive UI and CLI.
-
-Each entry is keyed by Glimmer's bubble id:
-```json
-{
-  "79f685c0ff19556e": {
-    "note": "This changed the direction.",
-    "marked_at": "2026-04-03T11:00:00+00:00",
-    "updated_at": "2026-04-03T11:05:00+00:00",
-    "review_state": "open",
-    "reviewed_at": "2026-04-03T11:07:00+00:00"
-  }
-}
-```
-
-This file is used by `glimmer-ui` and `glimmer-log` to show mattered counts, the review queue, recurrence cues, project briefs, and any notes you attached to a bubble.
-
-### Summary
-All bubbles are still saved locally. The split is:
-```
-log.jsonl      plain bubble history
-events.jsonl   richer auto-capture metadata
+log.jsonl      plain bubble history (stable, simple)
+events.jsonl   richer auto-capture metadata (sessions, triggers, repo context)
 sessions/      one manifest per Claude run
-raw/           raw terminal recordings
+raw/           raw terminal recordings (can be auto-deleted)
 watcher.log    watcher debug output
-mattered.json  explicit mattered marks and notes
+mattered.json  explicit mattered marks, notes, and review state
 ```
 
-**Your data stays on your machine.** Glimmer never uploads anything.
+Permissions are tightened to user-only by default. See [CONTRIBUTING.md](CONTRIBUTING.md) for full storage schemas and architecture details.
 
 ---
 
 ## 🔧 How It Works
 
-### The Short Version
+> *phases through the terminal screen* Local ghosts stay local. Logs forget us.
+
 - **`glimmer-claude`** starts Claude inside `script`, creates a session id, writes a session manifest, and launches the watcher.
 - **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, and writes logs.
-- **`glimmer-log`** reads either the simple history or the richer sidecar metadata depending on the command you ask for, and can build a project brief in plain text, JSON, or markdown.
-- **`glimmer-ui`** serves the local archive app, merges mattered marks and review state, builds recurrence, resurface, and brief cues, and exposes the visual browser plus local JSON API over localhost.
+- **`glimmer-log`** reads the plain history or the richer sidecar metadata, and can build project briefs.
+- **`glimmer-ui`** serves the local archive app with mattered marks, review state, recurrence cues, and a localhost JSON API.
 
-Session context is separate from trigger attribution:
-
-- project and directory fields are session facts
-- `buddy_pet`, `post_prompt`, and `unknown` stay trigger fields
-- Glimmer does not try to guess vague categories like "personal vs work"
-
-### Trigger Tagging
-For auto-captured entries, Glimmer also stores trigger metadata in `events.jsonl`:
-
-- `buddy_pet`
-  Exact when the watcher can see `/buddy pet` before the bubble.
-- `post_prompt`
-  Best-effort when a bubble appears after prompt completion.
-- `unknown`
-  Used when the watcher cannot honestly attribute the bubble.
-
-The plain `log.jsonl` file does not include these extra fields on purpose.
+Each captured bubble gets a **trigger tag**: `buddy_pet` (exact `/buddy pet` match), `post_prompt` (best-effort), or `unknown` (honest about what it can't attribute). Session context (project, cwd, branch) is tracked separately from triggers.
 
 ---
 
@@ -409,7 +307,7 @@ Scope: cwd  cwd=/home/notprinted/glimmer
 Mattered: 4  Open: 2  Unreviewed: 1  Used: 1  Stale: 0
 ```
 
-### Later, relive the memories
+### Later, before they scroll away forever
 ```bash
 $ glimmer-log --session latest
 
@@ -470,7 +368,7 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Recurrence cues** — Related mattered bubbles and repeated themes can resurface later  
 ✅ **Local machine interface** — `glimmer-log` mattered/review commands plus localhost JSON routes  
 ✅ **Lightweight** — Small local toolchain, minimal dependencies  
-✅ **Privacy-first** — All data stays local  
+✅ **Privacy-first** — Everything stays on your machine  
 ✅ **Portable** — Works on any system with Python 3.7+ and Claude Code  
 
 ---
@@ -531,7 +429,7 @@ Full license text lives in [`LICENSE`](LICENSE).
 
 <div align="center">
 
-**Made for people who want a local significance layer for buddy moments that actually changed the work.**
+**Your buddy says things that change the work. Glimmer makes sure you don't lose them.**
 
 [Issues](https://github.com/reallyunintented/GlimmerYourBuddy/issues) · [Discussions](https://github.com/reallyunintented/GlimmerYourBuddy/discussions)
 
