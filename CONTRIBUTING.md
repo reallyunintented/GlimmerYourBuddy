@@ -8,7 +8,7 @@ Found a bug? Have a feature idea? Love Glimmer and want to help?
 - **Digests** — Daily or weekly recap views over mattered bubbles
 - **Recurrence** — Better similarity heuristics and resurfacing rules
 - **Themes** — Alternative visual treatments for `glimmer-ui`
-- **Integration** — MCP and editor integrations that can read local significance data
+- **Integration** — Editor integrations and deeper agent workflows on top of the shipped MCP surface
 
 ## Getting Started
 

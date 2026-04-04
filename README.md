@@ -183,7 +183,13 @@ Glimmer includes a read-only MCP server so Claude Code agents can query your arc
 
 The `./install.sh` script sets up a Glimmer-owned Python venv and installs the `mcp` package automatically — no manual `pip install` needed.
 
-Add to `~/.claude/settings.json`:
+Add Glimmer to Claude Code with:
+
+```bash
+claude mcp add --transport stdio --scope user glimmer -- glimmer-mcp
+```
+
+If you prefer to edit the config directly, user-scoped MCP servers live in `~/.claude.json`:
 ```json
 {
   "mcpServers": {
