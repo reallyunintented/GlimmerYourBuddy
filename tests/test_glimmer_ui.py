@@ -390,6 +390,29 @@ class GlimmerUIApiTests(unittest.TestCase):
             )
             self.assertIn("direction", bubble["recurrence_matches"][0]["shared_tokens"])
 
+    def test_build_brief_view_scopes_to_project_and_infers_from_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            ids = build_recurrence_fixture(self.module, glimmer_dir)
+
+            index = self.module.build_index(glimmer_dir)
+            brief = self.module.build_brief_view(index, project="alpha")
+            inferred = self.module.build_brief_view(index, cwd="/work/alpha/src")
+
+            self.assertEqual(brief["scope"]["project_key"], "alpha")
+            self.assertEqual(brief["scope"]["source"], "project")
+            self.assertEqual(brief["summary"]["mattered_count"], 2)
+            self.assertEqual(brief["summary"]["open_count"], 1)
+            self.assertEqual(brief["summary"]["unreviewed_count"], 1)
+            self.assertEqual(brief["top_mattered"][0]["id"], ids["after"])
+            self.assertEqual(
+                {bubble["id"] for bubble in brief["open_items"]},
+                {ids["focus"], ids["after"]},
+            )
+            self.assertEqual(brief["recurring_signals"][0]["bubble"]["id"], ids["after"])
+            self.assertEqual(inferred["scope"]["project_key"], "alpha")
+            self.assertEqual(inferred["scope"]["source"], "cwd")
+
     def test_upsert_matter_defaults_review_state_to_unreviewed(self):
         bubble_id = "bubble-123"
         matters = {}

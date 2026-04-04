@@ -1,9 +1,11 @@
 const state = {
   data: null,
   reviewData: null,
+  briefData: null,
   bubbleDetail: null,
   loading: true,
   detailLoading: false,
+  briefLoading: false,
   detailRequestId: 0,
   view: "recent",
   previousView: "recent",
@@ -11,10 +13,12 @@ const state = {
   selectedBubbleId: null,
   selectedSessionId: null,
   selectedProjectKey: null,
+  briefProjectKey: null,
   reviewFilter: "all",
   reviewSort: "recently_marked",
   matterSaving: false,
   reviewSaving: false,
+  briefCopyStatus: "",
 };
 
 const elements = {
@@ -120,6 +124,20 @@ const sessionForBubble = (bubble) => {
 const matteredBubbles = () =>
   (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
 
+const currentBriefProjectKey = () =>
+  state.briefProjectKey || state.selectedProjectKey || state.data?.projects?.[0]?.project_key || null;
+
+const briefBubbleIds = () => {
+  if (!state.briefData) return [];
+  return Array.from(
+    new Set([
+      ...(state.briefData.top_mattered ?? []).map((bubble) => bubble.id),
+      ...(state.briefData.open_items ?? []).map((bubble) => bubble.id),
+      ...(state.briefData.recurring_signals ?? []).map((entry) => entry.bubble.id),
+    ])
+  );
+};
+
 const ensureReviewVisibilityForBubble = (bubbleId) => {
   const bubble = bubbleById(bubbleId);
   if (!bubble || state.view !== "review" || !bubble.mattered) return;
@@ -152,8 +170,18 @@ const setView = (nextView, options = {}) => {
   if (options.sessionId !== undefined) state.selectedSessionId = options.sessionId;
   if (options.projectKey !== undefined) state.selectedProjectKey = options.projectKey;
   if (options.bubbleId !== undefined) state.selectedBubbleId = options.bubbleId;
+  if (nextView === "brief") {
+    state.briefProjectKey = state.briefProjectKey || state.selectedProjectKey || state.data?.projects?.[0]?.project_key || null;
+    state.briefCopyStatus = "";
+  }
   syncNav();
   render();
+  if (nextView === "brief" && state.data) {
+    void loadBrief({
+      projectKey: currentBriefProjectKey(),
+      force: !state.briefData,
+    });
+  }
 };
 
 const syncNav = () => {
@@ -595,6 +623,144 @@ const renderReview = () => {
   elements.mainContent.append(stack);
 };
 
+const renderBrief = () => {
+  if (!state.briefData && !state.briefLoading) {
+    void loadBrief({ projectKey: currentBriefProjectKey(), force: true });
+  }
+
+  if (state.briefLoading && !state.briefData) {
+    elements.mainContent.replaceChildren(
+      buildEmptyState("Building brief", "Glimmer is assembling the most relevant project context.")
+    );
+    return;
+  }
+
+  const brief = state.briefData;
+  if (!brief) {
+    elements.mainContent.replaceChildren(
+      buildEmptyState("No brief yet", "Mark a few bubbles as mattered and Glimmer will build a project brief here.")
+    );
+    return;
+  }
+
+  const candidateIds = briefBubbleIds();
+  if (candidateIds.length && !candidateIds.includes(state.selectedBubbleId)) {
+    primeSelectedBubble(candidateIds[0]);
+  }
+
+  const projectOptions = state.data?.projects ?? [];
+  const summary = brief.summary ?? {};
+  const topMattered = brief.top_mattered ?? [];
+  const openItems = brief.open_items ?? [];
+  const recurring = brief.recurring_signals ?? [];
+  const recurringCount = recurring.length;
+
+  elements.mainContent.innerHTML = `
+    <section class="brief-hero">
+      <div class="brief-copy-shell">
+        <p class="eyebrow">Before you begin</p>
+        <h3>${escapeHtml(brief.scope.project_label || "Brief")}</h3>
+        <p class="section-copy">A project-specific recall pack built from the bubbles you marked as mattered.</p>
+      </div>
+      <div class="brief-controls-shell">
+        <label class="review-sort-shell brief-project-shell">
+          <span>Project</span>
+          <select id="brief-project-select" class="review-sort-select">
+            ${projectOptions
+              .map(
+                (project) => `
+                  <option value="${escapeHtml(project.project_key)}" ${project.project_key === (brief.scope.project_key || currentBriefProjectKey()) ? "selected" : ""}>
+                    ${escapeHtml(project.project_label)}
+                  </option>
+                `
+              )
+              .join("")}
+          </select>
+        </label>
+        <div class="brief-action-row">
+          <button class="secondary-button" data-copy-brief="plain">Copy plain</button>
+          <button class="link-button" data-copy-brief="markdown">Copy markdown</button>
+        </div>
+        ${state.briefCopyStatus ? `<p class="matter-meta">${escapeHtml(state.briefCopyStatus)}</p>` : ""}
+      </div>
+    </section>
+    <section class="review-summary brief-summary-grid">
+      <div class="review-summary-card">
+        <div class="card-meta">Mattered</div>
+        <strong>${summary.mattered_count ?? 0}</strong>
+        <p>Signals you explicitly kept from this project.</p>
+      </div>
+      <div class="review-summary-card">
+        <div class="card-meta">Open</div>
+        <strong>${summary.open_count ?? 0}</strong>
+        <p>Items still active in the review loop.</p>
+      </div>
+      <div class="review-summary-card">
+        <div class="card-meta">Unreviewed</div>
+        <strong>${summary.unreviewed_count ?? 0}</strong>
+        <p>Freshly marked bubbles you have not revisited yet.</p>
+      </div>
+      <div class="review-summary-card">
+        <div class="card-meta">Recurring</div>
+        <strong>${recurringCount}</strong>
+        <p>Repeated themes Glimmer can already surface here.</p>
+      </div>
+    </section>
+  `;
+
+  const stack = document.createElement("div");
+  stack.className = "section-stack";
+  stack.innerHTML = `
+    <section>
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Top Mattered</h3>
+          <p class="section-copy">The three strongest signals to read before you continue working.</p>
+        </div>
+        <span class="muted">${topMattered.length}</span>
+      </div>
+      ${topMattered.length ? `<div class="card-list">${topMattered.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>` : '<div class="review-empty">No mattered bubbles for this project yet.</div>'}
+    </section>
+    <section>
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Open Items</h3>
+          <p class="section-copy">Still-active matters that should stay in working memory.</p>
+        </div>
+        <span class="muted">${openItems.length}</span>
+      </div>
+      ${openItems.length ? `<div class="card-list">${openItems.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>` : '<div class="review-empty">Nothing open right now.</div>'}
+    </section>
+    <section>
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Recurring Signals</h3>
+          <p class="section-copy">Themes that keep showing up in mattered bubbles around this project.</p>
+        </div>
+        <span class="muted">${recurring.length}</span>
+      </div>
+      ${
+        recurring.length
+          ? `<div class="resurface-strip">${recurring
+              .map(
+                (entry) => `
+                  <button class="resurface-card" data-jump-bubble="${entry.bubble.id}">
+                    <span class="context-label">${escapeHtml(entry.match_count.toString())} matches · ${escapeHtml((entry.shared_tokens || []).slice(0, 3).join(", ") || "shared themes")}</span>
+                    <strong>${escapeHtml(entry.bubble.project_name || "No project")}</strong>
+                    <p>${escapeHtml(entry.bubble.matter_note || "No note attached.")}</p>
+                    <span class="context-copy">${escapeHtml(entry.bubble.preview)}</span>
+                  </button>
+                `
+              )
+              .join("")}</div>`
+          : '<div class="review-empty">No recurring signals yet.</div>'
+      }
+    </section>
+  `;
+
+  elements.mainContent.append(stack);
+};
+
 const renderDetail = () => {
   const mattered = matteredBubbles();
   if ((state.view === "mattered" || state.view === "review") && mattered.length === 0) {
@@ -753,7 +919,7 @@ const renderDetail = () => {
                       (match) => `
                         <button class="context-link" data-jump-bubble="${match.bubble.id}">
                           <span class="context-label">
-                            ${match.sameProject ? "Same project" : "Cross-project"} · shared ${escapeHtml(match.sharedTokens.slice(0, 3).join(", "))}
+                            ${match.same_project ? "Same project" : "Cross-project"} · shared ${escapeHtml((match.shared_tokens || []).slice(0, 3).join(", "))}
                           </span>
                           <span class="context-copy">${escapeHtml(match.bubble.preview)}</span>
                         </button>
@@ -818,6 +984,118 @@ const renderDetail = () => {
   elements.detail.replaceChildren(
     buildEmptyState("Select something", "Choose a bubble, session, or project to inspect the details on the right.")
   );
+};
+
+const buildBriefCopyText = (mode = "plain") => {
+  if (!state.briefData) return "";
+  const brief = state.briefData;
+  const summary = brief.summary ?? {};
+  const lineForBubble = (bubble) => {
+    const reviewState = bubble.review_state || "unreviewed";
+    const parts = [`[${reviewState}] ${bubble.text}`];
+    if (bubble.matter_note) parts.push(`note: ${bubble.matter_note}`);
+    parts.push(`id: ${bubble.id}`);
+    return parts.join(" | ");
+  };
+
+  if (mode === "markdown") {
+    return [
+      `# Glimmer Brief: ${brief.scope.project_label || "Brief"}`,
+      "",
+      `- Scope: ${brief.scope.source}${brief.scope.cwd ? ` · cwd=${brief.scope.cwd}` : ""}`,
+      `- Summary: ${summary.mattered_count ?? 0} mattered, ${summary.open_count ?? 0} open, ${summary.unreviewed_count ?? 0} unreviewed, ${summary.used_count ?? 0} used, ${summary.stale_count ?? 0} stale`,
+      "",
+      "## Top Mattered",
+      ...(brief.top_mattered?.length
+        ? brief.top_mattered.map((bubble) => `- ${lineForBubble(bubble)}`)
+        : ["- No mattered bubbles for this project yet."]),
+      "",
+      "## Open Items",
+      ...(brief.open_items?.length
+        ? brief.open_items.map((bubble) => `- ${lineForBubble(bubble)}`)
+        : ["- Nothing open right now."]),
+      "",
+      "## Recurring Signals",
+      ...(brief.recurring_signals?.length
+        ? brief.recurring_signals.map(
+            (entry) =>
+              `- ${lineForBubble(entry.bubble)} | matches: ${entry.match_count} | shared: ${(entry.shared_tokens || []).join(", ") || "shared themes"}`
+          )
+        : ["- No recurring signals yet."]),
+    ].join("\n");
+  }
+
+  return [
+    `Brief: ${brief.scope.project_label || "Brief"}`,
+    `Scope: ${brief.scope.source}${brief.scope.cwd ? `  cwd=${brief.scope.cwd}` : ""}`,
+    `Mattered: ${summary.mattered_count ?? 0}  Open: ${summary.open_count ?? 0}  Unreviewed: ${summary.unreviewed_count ?? 0}  Used: ${summary.used_count ?? 0}  Stale: ${summary.stale_count ?? 0}`,
+    "",
+    "Top mattered",
+    ...(brief.top_mattered?.length
+      ? brief.top_mattered.map((bubble) => `  - ${lineForBubble(bubble)}`)
+      : ["  none yet"]),
+    "",
+    "Open items",
+    ...(brief.open_items?.length
+      ? brief.open_items.map((bubble) => `  - ${lineForBubble(bubble)}`)
+      : ["  nothing open right now"]),
+    "",
+    "Recurring signals",
+    ...(brief.recurring_signals?.length
+      ? brief.recurring_signals.map(
+          (entry) =>
+            `  - ${lineForBubble(entry.bubble)} | matches=${entry.match_count} | shared=${(entry.shared_tokens || []).join(", ") || "shared themes"}`
+        )
+      : ["  none yet"]),
+  ].join("\n");
+};
+
+const copyBrief = async (mode = "plain") => {
+  const text = buildBriefCopyText(mode);
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    state.briefCopyStatus = mode === "markdown" ? "Copied markdown brief." : "Copied plain brief.";
+  } catch (error) {
+    console.error("Failed to copy brief:", error);
+    state.briefCopyStatus = "Copy failed in this browser.";
+  }
+  renderMain();
+};
+
+const loadBrief = async ({ projectKey = currentBriefProjectKey(), force = false } = {}) => {
+  if (state.briefLoading) return;
+  if (!force && state.briefData?.scope?.project_key === projectKey) return;
+
+  state.briefLoading = true;
+  if (state.view === "brief") renderMain();
+  try {
+    const params = new URLSearchParams();
+    if (projectKey) {
+      params.set("project", projectKey);
+    } else if (state.selectedSessionId) {
+      params.set("session", state.selectedSessionId);
+    }
+    const response = await fetch(`/api/brief?${params.toString()}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Brief failed with ${response.status}`);
+    }
+    const payload = await response.json();
+    state.briefData = payload;
+    state.briefProjectKey = payload.scope?.project_key || projectKey || null;
+    if (state.briefProjectKey) {
+      state.selectedProjectKey = state.briefProjectKey;
+    }
+  } catch (error) {
+    console.error("Failed to load brief:", error);
+    state.briefData = null;
+  } finally {
+    state.briefLoading = false;
+    if (state.view === "brief") {
+      renderMain();
+      renderDetail();
+    }
+  }
 };
 
 const saveMatter = async (bubbleId, marked) => {
@@ -892,6 +1170,7 @@ const renderMain = () => {
   }
 
   const titles = {
+    brief: ["Project recall before you begin", "Brief"],
     recent: ["Recent bubbles", "Recent"],
     mattered: ["Bubbles you marked as mattered", "Mattered"],
     review: ["Review mattered bubbles", "Review"],
@@ -903,6 +1182,10 @@ const renderMain = () => {
   elements.viewEyebrow.textContent = eyebrow;
   elements.viewTitle.textContent = title;
 
+  if (state.view === "brief") {
+    renderBrief();
+    return;
+  }
   if (state.view === "recent") {
     renderBubbleGroups((state.data?.bubbles ?? []).slice(0, 120));
     return;
@@ -988,10 +1271,19 @@ const loadData = async () => {
   if (!state.selectedProjectKey && state.data.projects[0]) {
     state.selectedProjectKey = state.data.projects[0].project_key;
   }
+  if (!state.briefProjectKey && state.data.projects[0]) {
+    state.briefProjectKey = state.selectedProjectKey || state.data.projects[0].project_key;
+  }
 
   render();
   if (state.selectedBubbleId) {
     void loadBubbleDetail(state.selectedBubbleId);
+  }
+  if (state.view === "brief" || state.briefData) {
+    void loadBrief({
+      projectKey: currentBriefProjectKey(),
+      force: true,
+    });
   }
 };
 
@@ -1018,6 +1310,15 @@ elements.mainContent.addEventListener("change", (event) => {
   if (event.target.id === "review-sort-select") {
     state.reviewSort = event.target.value;
     renderMain();
+    return;
+  }
+  if (event.target.id === "brief-project-select") {
+    state.briefProjectKey = event.target.value || null;
+    state.briefCopyStatus = "";
+    void loadBrief({
+      projectKey: state.briefProjectKey,
+      force: true,
+    });
   }
 });
 
@@ -1046,6 +1347,12 @@ document.addEventListener("click", (event) => {
   const projectCardElement = event.target.closest("[data-project-key]");
   if (projectCardElement) {
     setView("project", { projectKey: projectCardElement.dataset.projectKey });
+    return;
+  }
+
+  const copyBriefButton = event.target.closest("[data-copy-brief]");
+  if (copyBriefButton) {
+    void copyBrief(copyBriefButton.dataset.copyBrief || "plain");
     return;
   }
 

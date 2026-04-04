@@ -31,7 +31,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -596,6 +598,51 @@ input {
   gap: 12px;
 }
 
+.brief-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid rgba(49, 92, 122, 0.18);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(49, 92, 122, 0.05), transparent 48%),
+    var(--panel-strong);
+}
+
+.brief-copy-shell,
+.brief-controls-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.brief-copy-shell h3 {
+  margin: 0;
+  font-family: var(--heading-font);
+  font-size: 1.3rem;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.brief-controls-shell {
+  min-width: 240px;
+  align-content: start;
+}
+
+.brief-project-shell {
+  min-width: 240px;
+}
+
+.brief-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.brief-summary-grid {
+  margin-top: 4px;
+}
+
 .review-summary-card {
   display: grid;
   gap: 8px;
@@ -780,6 +827,15 @@ input {
   }
 
   .search-shell {
+    min-width: 0;
+  }
+
+  .brief-hero {
+    flex-direction: column;
+  }
+
+  .brief-controls-shell,
+  .brief-project-shell {
     min-width: 0;
   }
 }

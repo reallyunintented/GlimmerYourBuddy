@@ -35,6 +35,13 @@ REVIEW_STATES = (
     "used",
     "stale",
 )
+BRIEF_DEFAULT_LIMIT = 3
+BRIEF_REVIEW_PRIORITY = {
+    "open": 3,
+    DEFAULT_REVIEW_STATE: 2,
+    "used": 1,
+    "stale": 0,
+}
 RECURRENCE_STOP_WORDS = {
     "about",
     "after",
@@ -700,6 +707,223 @@ def build_review_view(index: dict) -> dict:
     }
 
 
+def normalize_context_path(value: str | None) -> str | None:
+    if not value:
+        return None
+    expanded = os.path.expanduser(value)
+    if os.path.isabs(expanded):
+        return os.path.normpath(expanded)
+    return os.path.normpath(os.path.join(os.getcwd(), expanded))
+
+
+def infer_project_key(index: dict, cwd: str | None = None) -> str | None:
+    normalized_cwd = normalize_context_path(cwd)
+    if normalized_cwd:
+        matches = []
+        for session in index["sessions"]:
+            project_key = session.get("project_label") or session.get("project_name")
+            if not project_key:
+                continue
+            project_root = normalize_context_path(session.get("project_root"))
+            session_cwd = normalize_context_path(session.get("cwd"))
+            score = -1
+            if project_root and (
+                normalized_cwd == project_root
+                or normalized_cwd.startswith(project_root + os.sep)
+            ):
+                score = len(project_root)
+            elif session_cwd and normalized_cwd == session_cwd:
+                score = len(session_cwd)
+            if score >= 0:
+                matches.append(
+                    (
+                        score,
+                        timestamp_sort_key(
+                            session.get("latest_bubble_at") or session.get("started_at")
+                        ),
+                        project_key,
+                    )
+                )
+        if matches:
+            matches.sort(reverse=True)
+            return matches[0][2]
+
+    mattered_projects = [
+        project for project in index["projects"] if project.get("mattered_count")
+    ]
+    if mattered_projects:
+        return mattered_projects[0].get("project_key")
+    if index["projects"]:
+        return index["projects"][0].get("project_key")
+    return None
+
+
+def resolve_brief_scope(
+    index: dict,
+    *,
+    project: str | None = None,
+    session_id: str | None = None,
+    cwd: str | None = None,
+) -> dict:
+    resolved_project = (project or "").strip() or None
+    resolved_session = None
+    source = "project" if resolved_project else None
+
+    if session_id:
+        if session_id == "latest":
+            resolved_session = index["sessions"][0] if index["sessions"] else None
+        else:
+            resolved_session = next(
+                (
+                    candidate
+                    for candidate in index["sessions"]
+                    if candidate.get("session_id") == session_id
+                ),
+                None,
+            )
+        if resolved_session and not resolved_project:
+            resolved_project = resolved_session.get("project_label")
+            source = "session"
+
+    if not resolved_project:
+        resolved_project = infer_project_key(index, cwd)
+        source = "cwd" if cwd and resolved_project else "fallback"
+
+    project_record = next(
+        (
+            candidate
+            for candidate in index["projects"]
+            if candidate.get("project_key") == resolved_project
+        ),
+        None,
+    )
+    sessions = [
+        session
+        for session in index["sessions"]
+        if session.get("project_label") == resolved_project
+    ]
+    bubbles = [
+        bubble
+        for bubble in mattered_bubbles(index)
+        if (bubble.get("project_name") or "No Project") == resolved_project
+    ]
+    return {
+        "project": project_record,
+        "project_key": resolved_project,
+        "project_label": (project_record or {}).get("project_label")
+        or resolved_project
+        or "All projects",
+        "session": resolved_session,
+        "sessions": sessions,
+        "mattered_bubbles": bubbles,
+        "source": source or "fallback",
+        "cwd": normalize_context_path(cwd),
+    }
+
+
+def brief_priority_key(index: dict, bubble: dict) -> tuple:
+    return (
+        1 if str(bubble.get("matter_note") or "").strip() else 0,
+        BRIEF_REVIEW_PRIORITY.get(
+            bubble.get("review_state") or DEFAULT_REVIEW_STATE,
+            0,
+        ),
+        len(recurrence_matches_for_bubble(index, bubble, limit=5)),
+        timestamp_sort_key(
+            bubble.get("matter_updated_at")
+            or bubble.get("reviewed_at")
+            or bubble.get("mattered_at")
+        ),
+        timestamp_sort_key(bubble.get("timestamp")),
+        bubble.get("id", ""),
+    )
+
+
+def build_brief_view(
+    index: dict,
+    *,
+    project: str | None = None,
+    session_id: str | None = None,
+    cwd: str | None = None,
+    limit: int = BRIEF_DEFAULT_LIMIT,
+) -> dict:
+    scope = resolve_brief_scope(index, project=project, session_id=session_id, cwd=cwd)
+    mattered = sorted(
+        scope["mattered_bubbles"],
+        key=lambda bubble: brief_priority_key(index, bubble),
+        reverse=True,
+    )
+    active_items = [
+        bubble
+        for bubble in mattered
+        if (bubble.get("review_state") or DEFAULT_REVIEW_STATE)
+        in {DEFAULT_REVIEW_STATE, "open"}
+    ]
+    recurring = []
+    for bubble in mattered:
+        matches = recurrence_matches_for_bubble(index, bubble, limit=5)
+        if not matches:
+            continue
+        recurring.append(
+            {
+                "bubble": bubble,
+                "match_count": len(matches),
+                "same_project_match_count": sum(
+                    1 for match in matches if match.get("same_project")
+                ),
+                "cross_project_match_count": sum(
+                    1 for match in matches if not match.get("same_project")
+                ),
+                "shared_tokens": sorted(
+                    {
+                        token
+                        for match in matches
+                        for token in match.get("shared_tokens") or []
+                    }
+                )[:6],
+                "matches": matches,
+            }
+        )
+    recurring.sort(
+        key=lambda entry: (
+            entry["same_project_match_count"],
+            entry["match_count"],
+            brief_priority_key(index, entry["bubble"]),
+        ),
+        reverse=True,
+    )
+
+    project_record = scope["project"] or {}
+    counts = {review_state: 0 for review_state in REVIEW_STATES}
+    for bubble in mattered:
+        counts[bubble.get("review_state") or DEFAULT_REVIEW_STATE] += 1
+
+    return {
+        "generated_at": index["generated_at"],
+        "scope": {
+            "project_key": scope["project_key"],
+            "project_label": scope["project_label"],
+            "source": scope["source"],
+            "cwd": scope["cwd"],
+            "session_id": (scope["session"] or {}).get("session_id"),
+        },
+        "summary": {
+            "bubble_count": project_record.get("bubble_count", 0),
+            "session_count": project_record.get("session_count", len(scope["sessions"])),
+            "mattered_count": len(mattered),
+            "open_count": counts["open"],
+            "unreviewed_count": counts[DEFAULT_REVIEW_STATE],
+            "used_count": counts["used"],
+            "stale_count": counts["stale"],
+            "last_seen_at": project_record.get("last_seen_at"),
+        },
+        "project": project_record or None,
+        "top_mattered": mattered[:limit],
+        "open_items": active_items[:limit],
+        "recurring_signals": recurring[:limit],
+    }
+
+
 def build_search_view(index: dict, query: str, mattered_only: bool = False) -> dict:
     needle = query.strip().casefold()
     if not needle:
@@ -1074,6 +1298,26 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             self.send_json(build_review_view(index))
             return
 
+        if parsed.path == "/api/brief":
+            index = build_index(self.config["glimmer_dir"])
+            params = parse_qs(parsed.query)
+            project = (params.get("project") or [""])[0] or None
+            session_id = (params.get("session") or [""])[0] or None
+            cwd = (params.get("cwd") or [""])[0] or None
+            try:
+                limit = int((params.get("limit") or [str(BRIEF_DEFAULT_LIMIT)])[0])
+            except ValueError:
+                limit = BRIEF_DEFAULT_LIMIT
+            self.send_json(
+                build_brief_view(
+                    index,
+                    project=project,
+                    session_id=session_id,
+                    cwd=cwd,
+                    limit=max(1, min(limit, 10)),
+                )
+            )
+            return
 
         if parsed.path == "/api/search":
             index = build_index(self.config["glimmer_dir"])

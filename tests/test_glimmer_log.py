@@ -418,5 +418,193 @@ class GlimmerLogMatterCommandTests(unittest.TestCase):
         self.assertEqual(payload["groups"]["used"][0]["id"], self.latest_bubble_id)
 
 
+class GlimmerLogBriefCommandTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.glimmer_ui = load_glimmer_ui_module()
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.home = Path(self.tempdir.name)
+        self.glimmer_dir = self.home / ".claude" / "glimmer"
+        self.sessions_dir = self.glimmer_dir / "sessions"
+        self.sessions_dir.mkdir(parents=True)
+        self.eventsfile = self.glimmer_dir / "events.jsonl"
+        self.logfile = self.glimmer_dir / "log.jsonl"
+        self._write_fixtures()
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _write_fixtures(self):
+        events = [
+            {
+                "timestamp": "2026-04-03T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "Earlier context bubble.",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            },
+            {
+                "timestamp": "2026-04-03T10:02:00+00:00",
+                "companion": "Glimmer",
+                "text": "Direction signal worth remembering.",
+                "source": "auto",
+                "bubble_seq": 2,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "post_prompt",
+                "trigger_confidence": "heuristic",
+            },
+            {
+                "timestamp": "2026-04-03T10:03:00+00:00",
+                "companion": "Glimmer",
+                "text": "Later context bubble with direction signal.",
+                "source": "auto",
+                "bubble_seq": 3,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            },
+            {
+                "timestamp": "2026-04-03T11:10:00+00:00",
+                "companion": "Glimmer",
+                "text": "Recurring direction signal in beta.",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "sess-2",
+                "cwd": "/work/beta",
+                "project_root": "/work/beta",
+                "project_name": "beta",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            },
+        ]
+        write_jsonl(self.eventsfile, events)
+        write_jsonl(self.logfile, [])
+
+        manifests = [
+            {
+                "session_id": "sess-1",
+                "started_at": "2026-04-03T09:59:00+00:00",
+                "ended_at": "2026-04-03T10:05:00+00:00",
+                "companion": "Glimmer",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+            },
+            {
+                "session_id": "sess-2",
+                "started_at": "2026-04-03T11:09:00+00:00",
+                "ended_at": "2026-04-03T11:12:00+00:00",
+                "companion": "Glimmer",
+                "cwd": "/work/beta",
+                "project_root": "/work/beta",
+                "project_name": "beta",
+                "git_branch": "main",
+                "is_repo_root": True,
+            },
+        ]
+        for manifest in manifests:
+            (self.sessions_dir / f'{manifest["session_id"]}.json').write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+        self.ids = {
+            "focus": self.glimmer_ui.bubble_id(events[1]),
+            "after": self.glimmer_ui.bubble_id(events[2]),
+            "beta": self.glimmer_ui.bubble_id(events[3]),
+        }
+        (self.glimmer_dir / "mattered.json").write_text(
+            json.dumps(
+                {
+                    self.ids["focus"]: {
+                        "note": "Need review on direction signal",
+                        "marked_at": "2026-04-03T10:06:00+00:00",
+                        "updated_at": "2026-04-03T10:06:00+00:00",
+                        "review_state": "unreviewed",
+                        "reviewed_at": None,
+                    },
+                    self.ids["after"]: {
+                        "note": "Direction signal remains open in alpha",
+                        "marked_at": "2026-04-03T10:07:00+00:00",
+                        "updated_at": "2026-04-03T10:08:00+00:00",
+                        "review_state": "open",
+                        "reviewed_at": "2026-04-03T10:08:00+00:00",
+                    },
+                    self.ids["beta"]: {
+                        "note": "Direction signal recurring concern in beta",
+                        "marked_at": "2026-04-03T11:11:00+00:00",
+                        "updated_at": "2026-04-03T11:12:00+00:00",
+                        "review_state": "used",
+                        "reviewed_at": "2026-04-03T11:12:00+00:00",
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def run_glimmer_log(self, *args: str) -> str:
+        env = os.environ.copy()
+        env["HOME"] = str(self.home)
+        completed = subprocess.run(
+            ["bash", str(GLIMMER_LOG), *args],
+            cwd=REPO_ROOT,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return completed.stdout
+
+    def test_brief_json_returns_project_summary(self):
+        output = self.run_glimmer_log("--brief", "--project", "alpha", "--json")
+        payload = json.loads(output)
+
+        self.assertEqual(payload["scope"]["project_key"], "alpha")
+        self.assertEqual(payload["summary"]["mattered_count"], 2)
+        self.assertEqual(payload["summary"]["open_count"], 1)
+        self.assertEqual(payload["top_mattered"][0]["id"], self.ids["after"])
+        self.assertEqual(payload["recurring_signals"][0]["bubble"]["id"], self.ids["after"])
+
+    def test_brief_markdown_formats_for_agent_handoff(self):
+        output = self.run_glimmer_log("--brief", "--project", "alpha", "--markdown")
+
+        self.assertIn("# Glimmer Brief: alpha", output)
+        self.assertIn("## Top Mattered", output)
+        self.assertIn(self.ids["after"], output)
+
+    def test_brief_can_infer_project_from_cwd_argument(self):
+        output = self.run_glimmer_log("--brief", "--cwd", "/work/alpha/src")
+
+        self.assertIn("Brief: alpha", output)
+        self.assertIn("Open items", output)
+
+
 if __name__ == "__main__":
     unittest.main()

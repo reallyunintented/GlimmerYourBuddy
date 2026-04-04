@@ -8,6 +8,7 @@
 #   glimmer-log --session latest Show newest session from events.jsonl
 #   glimmer-log --sessions       List known sessions
 #   glimmer-log --project NAME   List matching sessions
+#   glimmer-log --brief          Show a project-scoped brief for the current work
 #   glimmer-log --grep TEXT      Search captured bubble text
 #   glimmer-log --cleanup-raw    Remove old raw capture files
 #   glimmer-log --json           Raw legacy JSONL output
@@ -597,6 +598,160 @@ for review_state, bubbles in payload["groups"].items():
 PY
 }
 
+view_brief() {
+    local output_mode="${1:-pretty}"
+    local project_filter="${2:-}"
+    local session_ref="${3:-}"
+    local cwd_filter="${4:-}"
+    require_glimmer_ui_script
+    python3 - "$GLIMMER_UI_SCRIPT" "$GLIMMER_DIR" "$output_mode" "$project_filter" "$session_ref" "$cwd_filter" <<'PY'
+import importlib.util
+import json
+import os
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+
+def load_module(path: str):
+    loader = SourceFileLoader("glimmer_ui", path)
+    spec = importlib.util.spec_from_loader("glimmer_ui", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def format_ts(module, value: str | None) -> str:
+    parsed = module.parse_timestamp(value)
+    if parsed is None:
+        return value or "-"
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def brief_line(module, bubble: dict) -> str:
+    review_state = bubble.get("review_state") or module.DEFAULT_REVIEW_STATE
+    state_label = review_state.replace("_", " ")
+    text = module.truncate_text(bubble.get("text"), 140)
+    note = module.truncate_text(bubble.get("matter_note"), 120)
+    parts = [f"[{state_label}] {text}"]
+    if note:
+        parts.append(f"note: {note}")
+    parts.append(f"id: {bubble.get('id') or '-'}")
+    return " | ".join(parts)
+
+
+module = load_module(sys.argv[1])
+glimmer_dir = Path(sys.argv[2]).expanduser()
+output_mode = sys.argv[3]
+project_filter = sys.argv[4] or None
+session_ref = sys.argv[5] or None
+cwd_filter = sys.argv[6] or None
+cwd_context = cwd_filter or os.getcwd()
+payload = module.build_brief_view(
+    module.build_index(glimmer_dir),
+    project=project_filter,
+    session_id=session_ref,
+    cwd=cwd_context,
+)
+
+if output_mode == "json":
+    print(json.dumps(payload, ensure_ascii=False))
+    sys.exit(0)
+
+scope = payload["scope"]
+summary = payload["summary"]
+top_mattered = payload["top_mattered"]
+open_items = payload["open_items"]
+recurring = payload["recurring_signals"]
+
+if output_mode == "markdown":
+    print(f"# Glimmer Brief: {scope['project_label']}")
+    print()
+    print(
+        f"- Scope: {scope['source']}"
+        f"{' · cwd=' + scope['cwd'] if scope.get('cwd') else ''}"
+    )
+    print(
+        f"- Summary: {summary['mattered_count']} mattered, "
+        f"{summary['open_count']} open, {summary['unreviewed_count']} unreviewed, "
+        f"{summary['used_count']} used, {summary['stale_count']} stale"
+    )
+    if summary.get("last_seen_at"):
+        print(f"- Last seen: {format_ts(module, summary['last_seen_at'])}")
+    print()
+    print("## Top Mattered")
+    if not top_mattered:
+        print("- No mattered bubbles for this project yet.")
+    else:
+        for bubble in top_mattered:
+            print(f"- {brief_line(module, bubble)}")
+    print()
+    print("## Open Items")
+    if not open_items:
+        print("- Nothing open right now.")
+    else:
+        for bubble in open_items:
+            print(f"- {brief_line(module, bubble)}")
+    print()
+    print("## Recurring Signals")
+    if not recurring:
+        print("- No recurring signals yet.")
+    else:
+        for entry in recurring:
+            token_text = ", ".join(entry.get("shared_tokens") or []) or "shared themes"
+            print(
+                f"- {brief_line(module, entry['bubble'])}"
+                f" | matches: {entry['match_count']}"
+                f" | shared: {token_text}"
+            )
+    sys.exit(0)
+
+print(f"Brief: {scope['project_label']}")
+print(
+    f"Scope: {scope['source']}"
+    f"{'  cwd=' + scope['cwd'] if scope.get('cwd') else ''}"
+)
+print(
+    f"Mattered: {summary['mattered_count']}  "
+    f"Open: {summary['open_count']}  "
+    f"Unreviewed: {summary['unreviewed_count']}  "
+    f"Used: {summary['used_count']}  "
+    f"Stale: {summary['stale_count']}"
+)
+if summary.get("last_seen_at"):
+    print(f"Last seen: {format_ts(module, summary['last_seen_at'])}")
+print()
+
+print("Top mattered")
+if not top_mattered:
+    print("  none yet")
+else:
+    for bubble in top_mattered:
+        print(f"  - {brief_line(module, bubble)}")
+print()
+
+print("Open items")
+if not open_items:
+    print("  nothing open right now")
+else:
+    for bubble in open_items:
+        print(f"  - {brief_line(module, bubble)}")
+print()
+
+print("Recurring signals")
+if not recurring:
+    print("  none yet")
+else:
+    for entry in recurring:
+        token_text = ", ".join(entry.get("shared_tokens") or []) or "shared themes"
+        print(
+            f"  - {brief_line(module, entry['bubble'])}"
+            f" | matches={entry['match_count']}"
+            f" | shared={token_text}"
+        )
+PY
+}
+
 mark_bubble() {
     local bubble_ref="$1"
     local marked="$2"
@@ -728,8 +883,11 @@ show_help() {
     echo "  --branch NAME     Filter session views by exact git branch"
     echo "  --cwd PATH        Filter session views by exact cwd"
     echo "  --repo-root-only  Filter session views to repo-root sessions"
+    echo "  --brief [PROJECT] Show a project brief for the current cwd or selected project"
     echo "  --mattered        Show bubbles marked as mattered"
     echo "  --review [STATE]  Show mattered bubbles grouped by review state"
+    echo "  --markdown        Format Brief output as markdown for agent context"
+    echo "  --plain           Format Brief output as plain text"
     echo "  --mark ID         Mark a bubble as mattered (or use latest)"
     echo "  --unmark ID       Remove mattered mark from a bubble"
     echo "  --note TEXT       Optional note for --mark"
@@ -754,6 +912,7 @@ CWD_FILTER=""
 REPO_ROOT_ONLY=0
 GREP_TEXT=""
 REVIEW_FILTER=""
+BRIEF_PROJECT=""
 MARK_REF=""
 UNMARK_REF=""
 NOTE_TEXT=""
@@ -777,10 +936,27 @@ while [ $# -gt 0 ]; do
             fi
             shift
             ;;
+        --markdown)
+            OUTPUT_MODE="markdown"
+            shift
+            ;;
+        --plain)
+            OUTPUT_MODE="plain"
+            shift
+            ;;
         --stats)
             MODE="legacy"
             LEGACY_MODE="stats"
             shift
+            ;;
+        --brief)
+            MODE="brief"
+            if [ $# -ge 2 ] && [[ ! "${2:-}" =~ ^- ]]; then
+                BRIEF_PROJECT="$2"
+                shift 2
+            else
+                shift
+            fi
             ;;
         --sessions)
             MODE="sessions"
@@ -799,7 +975,11 @@ while [ $# -gt 0 ]; do
                 echo "Usage: glimmer-log --project <name>" >&2
                 exit 1
             fi
-            PROJECT_FILTER="$2"
+            if [ "$MODE" = "brief" ]; then
+                BRIEF_PROJECT="$2"
+            else
+                PROJECT_FILTER="$2"
+            fi
             shift 2
             ;;
         --branch)
@@ -933,6 +1113,11 @@ fi
 
 if [ "$MODE" = "review" ]; then
     view_review "$OUTPUT_MODE" "$REVIEW_FILTER"
+    exit 0
+fi
+
+if [ "$MODE" = "brief" ]; then
+    view_brief "$OUTPUT_MODE" "${BRIEF_PROJECT:-$PROJECT_FILTER}" "$SESSION_REF" "$CWD_FILTER"
     exit 0
 fi
 
