@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Glimmer MCP server — 5 read-only tools over stdio."""
+
+import importlib.util
+import json
+import os
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
+
+# ---------------------------------------------------------------------------
+# Load glimmer-ui as a module (same pattern as tests/test_glimmer_ui.py)
+# ---------------------------------------------------------------------------
+
+_MODULE_PATH = Path(__file__).resolve().parent / "glimmer-ui"
+_loader = SourceFileLoader("glimmer_ui", str(_MODULE_PATH))
+_spec = importlib.util.spec_from_loader("glimmer_ui", _loader)
+_ui = importlib.util.module_from_spec(_spec)
+_loader.exec_module(_ui)
+
+# ---------------------------------------------------------------------------
+# Glimmer directory & index helper
+# ---------------------------------------------------------------------------
+
+_GLIMMER_DIR = Path(os.environ.get("GLIMMER_DIR", Path.home() / ".claude" / "glimmer"))
+
+
+def _build_index() -> dict:
+    return _ui.build_index(_GLIMMER_DIR)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers (testable without MCP serialisation)
+# ---------------------------------------------------------------------------
+
+
+def _tool_get_brief(index, project=None, session_id=None, cwd=None, limit=3):
+    limit = max(1, min(limit, 10))
+    return _ui.build_brief_view(
+        index, project=project, session_id=session_id, cwd=cwd, limit=limit
+    )
+
+
+def _tool_list_mattered(index):
+    return _ui.build_mattered_view(index)
+
+
+def _tool_get_review(index):
+    return _ui.build_review_view(index)
+
+
+def _tool_search_bubbles(index, query, mattered_only=False):
+    return _ui.build_search_view(index, query, mattered_only=mattered_only)
+
+
+def _tool_get_bubble(index, bubble_id):
+    result = _ui.build_bubble_view(index, bubble_id)
+    if result is None:
+        return {"error": "Bubble not found"}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# MCP server & tool definitions
+# ---------------------------------------------------------------------------
+
+mcp_server = FastMCP("glimmer")
+
+
+@mcp_server.tool()
+def get_brief(
+    project: str | None = None,
+    session_id: str | None = None,
+    cwd: str | None = None,
+    limit: int = 3,
+) -> str:
+    """Get a project brief: top mattered bubbles, open items, and recurring signals."""
+    index = _build_index()
+    return json.dumps(
+        _tool_get_brief(index, project=project, session_id=session_id, cwd=cwd, limit=limit),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp_server.tool()
+def list_mattered() -> str:
+    """List all mattered bubbles sorted by recency."""
+    index = _build_index()
+    return json.dumps(_tool_list_mattered(index), ensure_ascii=False, indent=2)
+
+
+@mcp_server.tool()
+def get_review() -> str:
+    """Get mattered bubbles grouped by review state."""
+    index = _build_index()
+    return json.dumps(_tool_get_review(index), ensure_ascii=False, indent=2)
+
+
+@mcp_server.tool()
+def search_bubbles(query: str, mattered_only: bool = False) -> str:
+    """Search bubbles by text content. Optionally restrict to mattered-only."""
+    index = _build_index()
+    return json.dumps(
+        _tool_search_bubbles(index, query, mattered_only=mattered_only),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+@mcp_server.tool()
+def get_bubble(bubble_id: str) -> str:
+    """Get a single bubble by ID, including session and project context."""
+    index = _build_index()
+    return json.dumps(
+        _tool_get_bubble(index, bubble_id),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    mcp_server.run(transport="stdio")
