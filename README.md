@@ -181,10 +181,7 @@ This API is local-only and meant to support the UI first. It is also the foundat
 ### Use as an MCP Server
 Glimmer includes a read-only MCP server so Claude Code agents can query your archive directly.
 
-Requires the `mcp` Python package:
-```bash
-pip install mcp
-```
+The `./install.sh` script sets up a Glimmer-owned Python venv and installs the `mcp` package automatically — no manual `pip install` needed.
 
 Add to `~/.claude/settings.json`:
 ```json
