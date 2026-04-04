@@ -511,7 +511,6 @@ Check out [CONTRIBUTING.md](CONTRIBUTING.md) for ideas and guidelines.
 Some ideas:
 - Export to HTML, Markdown, or other formats
 - Digest and recap commands
-- MCP / agent integration
 - Better recurrence heuristics
 
 ---
