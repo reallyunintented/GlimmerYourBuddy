@@ -15,20 +15,9 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "glimmer-mcp"
-UI_MODULE_PATH = REPO_ROOT / "glimmer-ui"
-
-
 def load_module():
     loader = SourceFileLoader("glimmer_mcp", str(MODULE_PATH))
     spec = importlib.util.spec_from_loader("glimmer_mcp", loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-def load_ui_module():
-    loader = SourceFileLoader("glimmer_ui", str(UI_MODULE_PATH))
-    spec = importlib.util.spec_from_loader("glimmer_ui", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
@@ -99,7 +88,7 @@ class TestGetBrief(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_module()
-        cls.ui = load_ui_module()
+        cls.ui = cls.module._ui
 
     def test_get_brief_returns_scope_and_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,7 +115,7 @@ class TestListMattered(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_module()
-        cls.ui = load_ui_module()
+        cls.ui = cls.module._ui
 
     def test_list_mattered_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -143,7 +132,7 @@ class TestGetReview(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_module()
-        cls.ui = load_ui_module()
+        cls.ui = cls.module._ui
 
     def test_get_review_has_groups(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,7 +151,7 @@ class TestSearchBubbles(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_module()
-        cls.ui = load_ui_module()
+        cls.ui = cls.module._ui
 
     def test_search_finds_matching_bubble(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,6 +160,7 @@ class TestSearchBubbles(unittest.TestCase):
             index = self.ui.build_index(glimmer_dir)
             result = self.module._tool_search_bubbles(index, "ship")
             self.assertEqual(result["count"], 1)
+            self.assertIn("Ship it", result["bubbles"][0]["text"])
 
     def test_search_no_match(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -186,7 +176,7 @@ class TestGetBubble(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.module = load_module()
-        cls.ui = load_ui_module()
+        cls.ui = cls.module._ui
 
     def test_get_bubble_found(self):
         with tempfile.TemporaryDirectory() as tmp:
