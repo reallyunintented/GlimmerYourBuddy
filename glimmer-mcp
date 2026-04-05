@@ -76,12 +76,12 @@ def _normalize_limit(limit) -> int:
     return max(1, min(parsed, MAX_BRIEF_LIMIT))
 
 
-def _normalize_query(query) -> str | None:
+def _normalize_query(query, *, allow_empty: bool = False) -> str | None:
     if query is None:
-        return None
+        return "" if allow_empty else None
     text = str(query).strip()
     if not text:
-        return None
+        return "" if allow_empty else None
     if len(text) > MAX_QUERY_CHARS:
         return None
     return text
@@ -116,21 +116,36 @@ def _tool_get_review(index):
     return _ui.build_review_view(index)
 
 
-def _tool_search_bubbles(index, query, mattered_only=False):
-    normalized_query = _normalize_query(query)
+def _tool_search_bubbles(
+    index,
+    query=None,
+    mattered_only=False,
+    review_states=None,
+    staleness=None,
+    contexts=None,
+    has_note=False,
+    profile=None,
+    limit=MAX_SEARCH_RESULTS,
+    offset=0,
+):
+    normalized_query = _normalize_query(query, allow_empty=True)
     if normalized_query is None:
         return _json_error(
             "invalid_query",
-            f"query must be a non-empty string up to {MAX_QUERY_CHARS} characters",
+            f"query must be empty or a string up to {MAX_QUERY_CHARS} characters",
         )
-    result = _ui.build_search_view(index, normalized_query, mattered_only=mattered_only)
-    total = result.get("count", 0)
-    bubbles = list(result.get("bubbles") or [])
-    limited = bubbles[:MAX_SEARCH_RESULTS]
-    result["bubbles"] = limited
-    result["returned_count"] = len(limited)
-    result["truncated"] = total > len(limited)
-    return result
+    return _ui.build_search_view(
+        index,
+        normalized_query,
+        mattered_only=mattered_only,
+        review_states=review_states,
+        staleness=staleness,
+        contexts=contexts,
+        has_note=has_note,
+        profile=profile,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def _tool_get_bubble(index, bubble_id):
@@ -198,10 +213,31 @@ def get_review() -> str:
     return _json_result(payload)
 
 
-def search_bubbles(query: str, mattered_only: bool = False) -> str:
-    """Search bubbles by text content. Optionally restrict to mattered-only."""
+def search_bubbles(
+    query: str | None = None,
+    mattered_only: bool = False,
+    review_states: list[str] | None = None,
+    staleness: list[str] | None = None,
+    contexts: list[str] | None = None,
+    has_note: bool = False,
+    profile: str | None = None,
+    limit: int = MAX_SEARCH_RESULTS,
+    offset: int = 0,
+) -> str:
+    """Search bubbles by text plus optional mattered, review, staleness, note, profile, and context filters."""
     index = _build_index()
-    payload = _tool_search_bubbles(index, query, mattered_only=mattered_only)
+    payload = _tool_search_bubbles(
+        index,
+        query,
+        mattered_only=mattered_only,
+        review_states=review_states,
+        staleness=staleness,
+        contexts=contexts,
+        has_note=has_note,
+        profile=profile,
+        limit=limit,
+        offset=offset,
+    )
     if "error" not in payload:
         _ui.record_usage_for_index(
             DEFAULT_GLIMMER_DIR,

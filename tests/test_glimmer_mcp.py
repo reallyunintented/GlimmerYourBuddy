@@ -71,12 +71,21 @@ def build_fixture(glimmer_dir):
     )
 
 
-def mark_bubble(glimmer_dir, bubble_id, *, note="Keep this.", review_state="unreviewed", reviewed_at=None):
+def mark_bubble(
+    glimmer_dir,
+    bubble_id,
+    *,
+    note="Keep this.",
+    context="",
+    review_state="unreviewed",
+    reviewed_at=None,
+):
     (glimmer_dir / "mattered.json").write_text(
         json.dumps(
             {
                 bubble_id: {
                     "note": note,
+                    "context": context,
                     "marked_at": "2026-04-03T10:06:00+00:00",
                     "updated_at": reviewed_at or "2026-04-03T10:06:00+00:00",
                     "review_state": review_state,
@@ -250,13 +259,23 @@ class TestSearchBubbles(unittest.TestCase):
             result = self.module._tool_search_bubbles(index, "nonexistent")
             self.assertEqual(result["count"], 0)
 
-    def test_search_rejects_empty_query(self):
+    def test_search_allows_filter_only_queries(self):
         with tempfile.TemporaryDirectory() as tmp:
             glimmer_dir = Path(tmp)
             build_fixture(glimmer_dir)
+            bubble_id = self.ui.build_index(glimmer_dir)["bubbles"][0]["id"]
+            mark_bubble(glimmer_dir, bubble_id, context="hint", review_state="open")
             index = self.ui.build_index(glimmer_dir)
-            result = self.module._tool_search_bubbles(index, "   ")
-            self.assertEqual(result["error"]["code"], "invalid_query")
+            result = self.module._tool_search_bubbles(
+                index,
+                "",
+                mattered_only=True,
+                review_states=["active"],
+                contexts=["hint"],
+                has_note=True,
+            )
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["bubbles"][0]["id"], bubble_id)
 
     def test_search_truncates_large_result_sets(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,6 +287,41 @@ class TestSearchBubbles(unittest.TestCase):
             self.assertEqual(result["returned_count"], self.module.MAX_SEARCH_RESULTS)
             self.assertTrue(result["truncated"])
             self.assertEqual(len(result["bubbles"]), self.module.MAX_SEARCH_RESULTS)
+
+    def test_search_rejects_overlong_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_fixture(glimmer_dir)
+            index = self.ui.build_index(glimmer_dir)
+            result = self.module._tool_search_bubbles(index, "x" * (self.module.MAX_QUERY_CHARS + 1))
+            self.assertEqual(result["error"]["code"], "invalid_query")
+
+    def test_search_filters_by_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+            event = {
+                "timestamp": "2026-04-03T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "pet bubble",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "sess-pet",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "session_profile": "pet",
+                "trigger_type": "post_prompt",
+                "trigger_confidence": "heuristic",
+            }
+            eventsfile = glimmer_dir / "events.jsonl"
+            write_jsonl(eventsfile, [event])
+            index = self.ui.build_index(glimmer_dir)
+            result = self.module._tool_search_bubbles(index, "bubble", profile="pet")
+            self.assertEqual(result["count"], 1)
 
 
 @unittest.skipUnless(HAS_MCP, "mcp package not installed")
