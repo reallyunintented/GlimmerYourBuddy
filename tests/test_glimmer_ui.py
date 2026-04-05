@@ -1229,5 +1229,137 @@ class GlimmerUIServerTests(unittest.TestCase):
             self.assertEqual(payload["bubbles"][0]["matter_context"], "hint")
 
 
+class EmoteStateClassTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module()
+
+    def test_derive_state_class_known_verbs(self):
+        m = self.module
+        self.assertEqual(m.derive_state_class({"emote_verb": "drifts"}), "observing")
+        self.assertEqual(m.derive_state_class({"emote_verb": "hovers"}), "observing")
+        self.assertEqual(m.derive_state_class({"emote_verb": "flickers"}), "uncertain")
+        self.assertEqual(m.derive_state_class({"emote_verb": "phases"}), "transitioning")
+        self.assertEqual(m.derive_state_class({"emote_verb": "shimmers"}), "warm")
+        self.assertEqual(m.derive_state_class({"emote_verb": "glows"}), "warm")
+        self.assertEqual(m.derive_state_class({"emote_verb": "settles"}), "calm")
+        self.assertEqual(m.derive_state_class({"emote_verb": "dims"}), "concerned")
+
+    def test_derive_state_class_article(self):
+        m = self.module
+        self.assertEqual(m.derive_state_class({"emote_verb": "a"}), "unknown")
+        self.assertEqual(m.derive_state_class({"emote_verb": "an"}), "unknown")
+        self.assertEqual(m.derive_state_class({"emote_verb": "the"}), "unknown")
+
+    def test_derive_state_class_unmapped_verb(self):
+        self.assertEqual(self.module.derive_state_class({"emote_verb": "snorts"}), "unknown")
+
+    def test_derive_state_class_missing_verb(self):
+        self.assertIsNone(self.module.derive_state_class({"emote_verb": None}))
+        self.assertIsNone(self.module.derive_state_class({}))
+
+    def test_normalize_bubble_carries_emote_verb_and_state_class_slot(self):
+        entry = {
+            "timestamp": "2026-04-05T00:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "*drifts closer* Hi.",
+            "emote_verb": "drifts",
+        }
+        bubble = self.module.normalize_bubble(entry, "events")
+        self.assertEqual(bubble["emote_verb"], "drifts")
+        self.assertIsNone(bubble["state_class"])
+
+    def test_normalize_bubble_emote_verb_none_when_absent(self):
+        entry = {
+            "timestamp": "2026-04-05T00:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "Plain bubble.",
+        }
+        bubble = self.module.normalize_bubble(entry, "events")
+        self.assertIsNone(bubble["emote_verb"])
+        self.assertIsNone(bubble["state_class"])
+
+    def test_build_index_derives_state_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+            event = {
+                "timestamp": "2026-04-05T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "*drifts closer* Observing.",
+                "source": "auto",
+                "session_id": "s-1",
+                "emote_verb": "drifts",
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            }
+            write_jsonl(glimmer_dir / "events.jsonl", [event])
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            index = self.module.build_index(glimmer_dir)
+            bubble = index["bubbles"][0]
+            self.assertEqual(bubble["emote_verb"], "drifts")
+            self.assertEqual(bubble["state_class"], "observing")
+
+    def test_backward_compat_no_emote_verb(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+            old_event = {
+                "timestamp": "2026-04-03T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "*drifts closer* Old bubble.",
+                "source": "auto",
+                "session_id": "sess-old",
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            }
+            write_jsonl(glimmer_dir / "events.jsonl", [old_event])
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            index = self.module.build_index(glimmer_dir)
+            bubble = index["bubbles"][0]
+            self.assertIsNone(bubble["emote_verb"])
+            self.assertIsNone(bubble["state_class"])
+
+    def test_search_state_classes_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+            events = [
+                {
+                    "timestamp": "2026-04-05T10:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*drifts closer* Observing.",
+                    "source": "auto",
+                    "session_id": "s-1",
+                    "emote_verb": "drifts",
+                    "trigger_type": "unknown",
+                    "trigger_confidence": "none",
+                },
+                {
+                    "timestamp": "2026-04-05T11:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*flickers with concern* Uncertain.",
+                    "source": "auto",
+                    "session_id": "s-1",
+                    "emote_verb": "flickers",
+                    "trigger_type": "unknown",
+                    "trigger_confidence": "none",
+                },
+            ]
+            write_jsonl(glimmer_dir / "events.jsonl", events)
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            index = self.module.build_index(glimmer_dir)
+            result = self.module.build_search_view(index, "", state_classes=["observing"])
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["bubbles"][0]["state_class"], "observing")
+            self.assertEqual(result["filters"]["state_classes"], ["observing"])
+            result2 = self.module.build_search_view(index, "", state_classes=["uncertain"])
+            self.assertEqual(result2["count"], 1)
+            self.assertEqual(result2["bubbles"][0]["state_class"], "uncertain")
+
+
 if __name__ == "__main__":
     unittest.main()

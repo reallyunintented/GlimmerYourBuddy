@@ -123,6 +123,7 @@ def _tool_search_bubbles(
     review_states=None,
     staleness=None,
     contexts=None,
+    state_classes=None,
     has_note=False,
     profile=None,
     limit=MAX_SEARCH_RESULTS,
@@ -141,6 +142,7 @@ def _tool_search_bubbles(
         review_states=review_states,
         staleness=staleness,
         contexts=contexts,
+        state_classes=state_classes,
         has_note=has_note,
         profile=profile,
         limit=limit,
@@ -219,12 +221,13 @@ def search_bubbles(
     review_states: list[str] | None = None,
     staleness: list[str] | None = None,
     contexts: list[str] | None = None,
+    state_classes: list[str] | None = None,
     has_note: bool = False,
     profile: str | None = None,
     limit: int = MAX_SEARCH_RESULTS,
     offset: int = 0,
 ) -> str:
-    """Search bubbles by text plus optional mattered, review, staleness, note, profile, and context filters."""
+    """Search bubbles by text plus optional mattered, review, staleness, note, profile, context, and state_class filters."""
     index = _build_index()
     payload = _tool_search_bubbles(
         index,
@@ -233,6 +236,7 @@ def search_bubbles(
         review_states=review_states,
         staleness=staleness,
         contexts=contexts,
+        state_classes=state_classes,
         has_note=has_note,
         profile=profile,
         limit=limit,

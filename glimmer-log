@@ -345,6 +345,8 @@ for entry in entries:
         header += f'  \033[2m#{entry["bubble_seq"]}\033[0m'
     if entry.get("trigger_type") and entry.get("trigger_type") != "unknown":
         header += f'  \033[2m[{entry["trigger_type"]}]\033[0m'
+    if entry.get("emote_verb"):
+        header += f'  \033[2m~{entry["emote_verb"]}\033[0m'
     print(header)
     print(f'  \033[3m"{entry.get("text", "")}"\033[0m')
     print()
@@ -497,6 +499,15 @@ def staleness_text(bubble: dict) -> str:
     return f"  staleness: {bucket} — {bubble.get('staleness_reason') or '-'}"
 
 
+def state_class_text(bubble: dict) -> str:
+    cls = bubble.get("state_class")
+    if not cls:
+        return ""
+    verb = bubble.get("emote_verb")
+    verb_part = f" (~{verb})" if verb else ""
+    return f"  state: {cls}{verb_part}"
+
+
 module = load_module(sys.argv[1])
 glimmer_dir = Path(sys.argv[2]).expanduser()
 output_mode = sys.argv[3]
@@ -536,6 +547,9 @@ for bubble in payload["bubbles"]:
     print(f'  "{bubble.get("text", "")}"')
     if bubble.get("matter_note"):
         print(f'  note: {bubble["matter_note"]}')
+    sc = state_class_text(bubble)
+    if sc:
+        print(sc)
     print()
 PY
 }

@@ -323,6 +323,45 @@ class TestSearchBubbles(unittest.TestCase):
             result = self.module._tool_search_bubbles(index, "bubble", profile="pet")
             self.assertEqual(result["count"], 1)
 
+    def test_search_filters_by_state_classes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+            events = [
+                {
+                    "timestamp": "2026-04-05T10:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*drifts closer* Observing.",
+                    "source": "auto",
+                    "bubble_seq": 1,
+                    "session_id": "s-1",
+                    "emote_verb": "drifts",
+                    "trigger_type": "unknown",
+                    "trigger_confidence": "none",
+                },
+                {
+                    "timestamp": "2026-04-05T11:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*flickers with concern* Uncertain.",
+                    "source": "auto",
+                    "bubble_seq": 2,
+                    "session_id": "s-1",
+                    "emote_verb": "flickers",
+                    "trigger_type": "unknown",
+                    "trigger_confidence": "none",
+                },
+            ]
+            write_jsonl(glimmer_dir / "events.jsonl", events)
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            index = self.ui.build_index(glimmer_dir)
+            result = self.module._tool_search_bubbles(
+                index, state_classes=["observing"]
+            )
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["bubbles"][0]["state_class"], "observing")
+            self.assertEqual(result["filters"]["state_classes"], ["observing"])
+
 
 @unittest.skipUnless(HAS_MCP, "mcp package not installed")
 class TestGetBubble(unittest.TestCase):

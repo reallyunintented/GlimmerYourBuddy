@@ -287,6 +287,15 @@ def classify_trigger(cleaned_text: str, bubble: dict) -> dict:
     }
 
 
+EMOTE_VERB_RE = re.compile(r"^\*(\w+)")
+
+
+def extract_emote_verb(text: str) -> str | None:
+    """Return the first word of an italicised emote action, or None."""
+    match = EMOTE_VERB_RE.match(text)
+    return match.group(1).lower() if match else None
+
+
 def load_session_state(session_id: str | None) -> tuple[set[str], int]:
     """Load bubbles already logged for this session."""
     seen = set()
@@ -361,6 +370,7 @@ def build_entry(
         "session_profile": session_ctx.get("session_profile"),
         "trigger_type": trigger_ctx.get("trigger_type", "unknown"),
         "trigger_confidence": trigger_ctx.get("trigger_confidence", "none"),
+        "emote_verb": extract_emote_verb(text),
     }
     if "raw_path" in session_ctx:
         entry["raw_path"] = session_ctx.get("raw_path")
