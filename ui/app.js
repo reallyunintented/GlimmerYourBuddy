@@ -1,15 +1,28 @@
+const createSearchFilters = () => ({
+  matteredOnly: false,
+  reviewStates: [],
+  staleness: [],
+  contexts: [],
+  profile: null,
+  hasNote: false,
+});
+
 const state = {
   data: null,
   reviewData: null,
+  searchData: null,
   briefData: null,
   bubbleDetail: null,
   loading: true,
+  searchLoading: false,
   detailLoading: false,
   briefLoading: false,
+  searchRequestId: 0,
   detailRequestId: 0,
   view: "recent",
   previousView: "recent",
   query: "",
+  searchFilters: createSearchFilters(),
   selectedBubbleId: null,
   selectedSessionId: null,
   selectedProjectKey: null,
@@ -70,6 +83,20 @@ const STALENESS_META = {
   },
   stale: {
     label: "Needs return",
+  },
+};
+
+const MATTER_CONTEXTS = ["hint", "comment", "random"];
+
+const MATTER_CONTEXT_META = {
+  hint: {
+    label: "Hint",
+  },
+  comment: {
+    label: "Comment",
+  },
+  random: {
+    label: "Random",
   },
 };
 
@@ -136,6 +163,8 @@ const sessionForBubble = (bubble) => {
 const matteredBubbles = () =>
   (state.data?.bubbles ?? []).filter((bubble) => bubble.mattered);
 
+const searchResultBubbles = () => state.searchData?.bubbles ?? [];
+
 const currentBriefProjectKey = () =>
   state.briefProjectKey || state.selectedProjectKey || state.data?.projects?.[0]?.project_key || null;
 
@@ -156,6 +185,37 @@ const usageLabel = (bubble) => {
   if (bubble.days_since_used === 0) return "Used today";
   if (bubble.days_since_used === 1) return "Used 1 day ago";
   return `Used ${bubble.days_since_used} days ago`;
+};
+
+const formatMatterContext = (value) => MATTER_CONTEXT_META[value]?.label || value || "";
+
+const searchHasActiveFilters = () => {
+  const filters = state.searchFilters;
+  return Boolean(
+    filters.matteredOnly ||
+      filters.hasNote ||
+      filters.reviewStates.length ||
+      filters.staleness.length ||
+      filters.contexts.length
+  );
+};
+
+const searchHasCriteria = () => Boolean(state.query.trim()) || searchHasActiveFilters();
+
+const clearSearchState = () => {
+  state.query = "";
+  state.searchData = null;
+  state.searchLoading = false;
+  state.searchRequestId += 1;
+  state.searchFilters = createSearchFilters();
+  elements.searchInput.value = "";
+};
+
+const toggleSearchListFilter = (key, value) => {
+  const items = state.searchFilters[key] ?? [];
+  state.searchFilters[key] = items.includes(value)
+    ? items.filter((item) => item !== value)
+    : [...items, value];
 };
 
 const ensureReviewVisibilityForBubble = (bubbleId) => {
@@ -183,6 +243,9 @@ const setSelectedBubble = (bubbleId) => {
 };
 
 const setView = (nextView, options = {}) => {
+  if (state.view === "search" && nextView !== "search" && !options.preserveSearch) {
+    clearSearchState();
+  }
   if (state.view !== "search") {
     state.previousView = state.view;
   }
@@ -236,6 +299,9 @@ const renderOverview = () => {
 const bubbleChips = (bubble) => {
   const chips = [];
   if (bubble.mattered) chips.push(`<span class="chip chip-accent">Mattered</span>`);
+  if (bubble.mattered && bubble.matter_context) {
+    chips.push(`<span class="chip">${escapeHtml(formatMatterContext(bubble.matter_context))}</span>`);
+  }
   if (bubble.mattered && bubble.review_state) {
     chips.push(`<span class="chip">${escapeHtml(REVIEW_META[bubble.review_state]?.label || bubble.review_state)}</span>`);
   }
@@ -263,13 +329,7 @@ const bubbleCard = (bubble, { compact = false } = {}) => `
   </article>
 `;
 
-const renderBubbleGroups = (bubbles) => {
-  if (!bubbles.length) {
-    elements.mainContent.replaceChildren(
-      buildEmptyState("Nothing here yet", "Capture a few bubbles and they will appear here.")
-    );
-    return;
-  }
+const buildBubbleGroupStack = (bubbles) => {
   const grouped = new Map();
   bubbles.forEach((bubble) => {
     const key = dayLabel(bubble.timestamp);
@@ -277,7 +337,6 @@ const renderBubbleGroups = (bubbles) => {
     grouped.get(key).push(bubble);
   });
 
-  elements.mainContent.innerHTML = "";
   const stack = document.createElement("div");
   stack.className = "section-stack";
   grouped.forEach((entries, label) => {
@@ -291,7 +350,17 @@ const renderBubbleGroups = (bubbles) => {
     `;
     stack.append(section);
   });
-  elements.mainContent.append(stack);
+  return stack;
+};
+
+const renderBubbleGroups = (bubbles) => {
+  if (!bubbles.length) {
+    elements.mainContent.replaceChildren(
+      buildEmptyState("Nothing here yet", "Capture a few bubbles and they will appear here.")
+    );
+    return;
+  }
+  elements.mainContent.replaceChildren(buildBubbleGroupStack(bubbles));
 };
 
 const reviewSortKey = (bubble) => {
@@ -478,27 +547,145 @@ const renderSessionDetail = () => {
 };
 
 const renderSearch = () => {
-  const query = state.query.trim().toLowerCase();
-  if (!query) {
-    elements.mainContent.replaceChildren(
-      buildEmptyState("Search the archive", "Type a remembered phrase and Glimmer will pull matching bubbles from the local history.")
+  const hasCriteria = searchHasCriteria();
+  const bubbles = searchResultBubbles();
+  const count = state.searchData?.count ?? 0;
+  const returnedCount = state.searchData?.returned_count ?? bubbles.length;
+
+  elements.mainContent.innerHTML = "";
+  const stack = document.createElement("div");
+  stack.className = "section-stack";
+  stack.innerHTML = `
+    <section class="search-panel">
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Search Filters</h3>
+          <p class="section-copy">Use the top search box plus matter metadata to narrow the archive.</p>
+        </div>
+        <button class="secondary-button search-reset-button" data-search-reset ${!hasCriteria ? "disabled" : ""}>Clear</button>
+      </div>
+      <div class="search-filter-grid">
+        <div class="search-filter-block">
+          <span class="context-label">Scope</span>
+          <div class="review-filter-row">
+            <button class="chip-button ${state.searchFilters.matteredOnly ? "is-active" : ""}" data-search-flag="matteredOnly">Mattered only</button>
+            <button class="chip-button ${state.searchFilters.hasNote ? "is-active" : ""}" data-search-flag="hasNote">Has note</button>
+          </div>
+        </div>
+        <div class="search-filter-block">
+          <span class="context-label">Review State</span>
+          <div class="review-filter-row">
+            ${REVIEW_STATES.map(
+              (reviewState) => `
+                <button
+                  class="chip-button ${state.searchFilters.reviewStates.includes(reviewState) ? "is-active" : ""}"
+                  data-search-filter="reviewStates"
+                  data-search-filter-value="${reviewState}"
+                >
+                  ${escapeHtml(REVIEW_META[reviewState].label)}
+                </button>
+              `
+            ).join("")}
+          </div>
+        </div>
+        <div class="search-filter-block">
+          <span class="context-label">Staleness</span>
+          <div class="review-filter-row">
+            ${Object.entries(STALENESS_META)
+              .map(
+                ([bucket, meta]) => `
+                  <button
+                    class="chip-button ${state.searchFilters.staleness.includes(bucket) ? "is-active" : ""}"
+                    data-search-filter="staleness"
+                    data-search-filter-value="${bucket}"
+                  >
+                    ${escapeHtml(meta.label)}
+                  </button>
+                `
+              )
+              .join("")}
+          </div>
+        </div>
+        <div class="search-filter-block">
+          <span class="context-label">Why It Mattered</span>
+          <div class="review-filter-row">
+            ${MATTER_CONTEXTS.map(
+              (context) => `
+                <button
+                  class="chip-button ${state.searchFilters.contexts.includes(context) ? "is-active" : ""}"
+                  data-search-filter="contexts"
+                  data-search-filter-value="${context}"
+                >
+                  ${escapeHtml(formatMatterContext(context))}
+                </button>
+              `
+            ).join("")}
+          </div>
+        </div>
+        <div class="search-filter-block">
+          <span class="context-label">Profile</span>
+          <div class="review-filter-row">
+            <input
+              type="text"
+              class="profile-filter-input"
+              placeholder="any profile…"
+              value="${state.searchFilters.profile || ''}"
+              data-profile-input
+            />
+            <button
+              class="chip-button ${state.searchFilters.profile === 'pet' ? 'is-active' : ''}"
+              data-profile-chip="pet"
+            >pet</button>
+            <button
+              class="chip-button ${state.searchFilters.profile === 'ambient' ? 'is-active' : ''}"
+              data-profile-chip="ambient"
+            >ambient</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+
+  const results = document.createElement("section");
+  if (!hasCriteria) {
+    results.append(
+      buildEmptyState(
+        "Search the archive",
+        "Type a remembered phrase, or start with matter filters like Active, Needs return, or Hint."
+      )
     );
-    return;
+  } else if (state.searchLoading && !state.searchData) {
+    results.append(
+      buildEmptyState("Searching archive", "Glimmer is pulling matching bubbles from your local history.")
+    );
+  } else if (!bubbles.length) {
+    results.innerHTML = `
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Results</h3>
+          <p class="section-copy">No bubbles matched the current search criteria.</p>
+        </div>
+        <span class="muted">0</span>
+      </div>
+    `;
+    results.append(
+      buildEmptyState("No matches", "Try a broader phrase or remove a few filters.")
+    );
+  } else {
+    results.innerHTML = `
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Results</h3>
+          <p class="section-copy">${state.searchData?.truncated ? `Showing ${returnedCount} of ${count} matches.` : `${count} match${count === 1 ? "" : "es"} in local history.`}</p>
+        </div>
+        <span class="muted">${count}</span>
+      </div>
+    `;
+    results.append(buildBubbleGroupStack(bubbles));
   }
-  const bubbles = (state.data?.bubbles ?? []).filter((bubble) => {
-    const haystack = [
-      bubble.text,
-      bubble.project_name,
-      bubble.git_branch,
-      bubble.companion,
-      bubble.trigger_type,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    return haystack.includes(query);
-  });
-  renderBubbleGroups(bubbles);
+
+  stack.append(results);
+  elements.mainContent.append(stack);
 };
 
 const renderMattered = () => {
@@ -835,6 +1022,30 @@ const renderDetail = () => {
     return;
   }
 
+  if (state.view === "search") {
+    if (state.searchLoading && !state.searchData) {
+      elements.detail.replaceChildren(
+        buildEmptyState("Searching archive", "Matching bubbles will appear here once the current search finishes.")
+      );
+      return;
+    }
+    if (searchHasCriteria()) {
+      const visibleBubbleIds = new Set(searchResultBubbles().map((bubble) => bubble.id));
+      if (!visibleBubbleIds.size) {
+        elements.detail.replaceChildren(
+          buildEmptyState("No matching bubble", "Adjust the search text or filters to widen the result set.")
+        );
+        return;
+      }
+      if (!visibleBubbleIds.has(state.selectedBubbleId)) {
+        elements.detail.replaceChildren(
+          buildEmptyState("Select a result", "Choose a matching bubble to inspect its context on the right.")
+        );
+        return;
+      }
+    }
+  }
+
   const bubble = bubbleById(state.selectedBubbleId);
   if (bubble) {
     const detail = state.bubbleDetail?.bubble?.id === bubble.id ? state.bubbleDetail : null;
@@ -859,6 +1070,17 @@ const renderDetail = () => {
               </div>
               ${bubble.mattered ? '<span class="matter-badge">Marked</span>' : ""}
             </div>
+            <label class="matter-context-shell">
+              <span>Why it mattered</span>
+              <select id="matter-context-select" class="review-sort-select" ${detailBusy ? "disabled" : ""}>
+                <option value="">None</option>
+                ${MATTER_CONTEXTS.map(
+                  (context) => `
+                    <option value="${context}" ${bubble.matter_context === context ? "selected" : ""}>${escapeHtml(formatMatterContext(context))}</option>
+                  `
+                ).join("")}
+              </select>
+            </label>
             <textarea
               id="matter-note-input"
               class="matter-note-input"
@@ -932,6 +1154,7 @@ const renderDetail = () => {
             <div class="meta-item"><dt>Last used</dt><dd>${escapeHtml(bubble.last_used_at ? formatDateTime(bubble.last_used_at) : "Never")}</dd></div>
             <div class="meta-item"><dt>Use count</dt><dd>${escapeHtml(String(bubble.use_count ?? 0))}</dd></div>
             <div class="meta-item"><dt>Mattered</dt><dd>${bubble.mattered ? "Yes" : "No"}</dd></div>
+            ${bubble.mattered ? `<div class="meta-item"><dt>Context</dt><dd>${escapeHtml(formatMatterContext(bubble.matter_context) || "Not set")}</dd></div>` : ""}
             ${bubble.mattered ? `<div class="meta-item"><dt>Review state</dt><dd>${escapeHtml(REVIEW_META[reviewState]?.label || reviewState)}</dd></div>` : ""}
             ${bubble.mattered && bubble.staleness_bucket ? `<div class="meta-item"><dt>Staleness</dt><dd>${escapeHtml(STALENESS_META[bubble.staleness_bucket]?.label || bubble.staleness_bucket)}</dd></div>` : ""}
             ${bubble.mattered && bubble.staleness_reason ? `<div class="meta-item"><dt>Reason</dt><dd>${escapeHtml(bubble.staleness_reason)}</dd></div>` : ""}
@@ -1062,6 +1285,7 @@ const buildBriefCopyText = (mode = "plain") => {
   const lineForBubble = (bubble) => {
     const reviewState = bubble.review_state || "unreviewed";
     const parts = [`[${reviewState}] ${bubble.text}`];
+    if (bubble.matter_context) parts.push(`context: ${bubble.matter_context}`);
     if (bubble.staleness_bucket) {
       parts.push(`staleness: ${bubble.staleness_bucket}`);
     }
@@ -1187,6 +1411,7 @@ const loadBrief = async ({ projectKey = currentBriefProjectKey(), force = false 
 
 const saveMatter = async (bubbleId, marked) => {
   const noteInput = document.getElementById("matter-note-input");
+  const contextInput = document.getElementById("matter-context-select");
   state.matterSaving = true;
   renderDetail();
   try {
@@ -1199,6 +1424,7 @@ const saveMatter = async (bubbleId, marked) => {
         bubble_id: bubbleId,
         marked,
         note: noteInput?.value ?? "",
+        context: contextInput?.value ?? "",
       }),
     });
     if (!response.ok) {
@@ -1210,6 +1436,68 @@ const saveMatter = async (bubbleId, marked) => {
   } finally {
     state.matterSaving = false;
     renderDetail();
+  }
+};
+
+const loadSearch = async ({ renderAfter = true } = {}) => {
+  const requestId = state.searchRequestId + 1;
+  state.searchRequestId = requestId;
+
+  if (!searchHasCriteria()) {
+    state.searchData = null;
+    state.searchLoading = false;
+    if (renderAfter && state.view === "search") {
+      renderMain();
+      renderDetail();
+    }
+    return;
+  }
+
+  state.searchLoading = true;
+  if (renderAfter && state.view === "search") {
+    renderMain();
+    renderDetail();
+  }
+
+  try {
+    const params = new URLSearchParams();
+    if (state.query.trim()) params.set("q", state.query.trim());
+    if (state.searchFilters.matteredOnly) params.set("mattered_only", "1");
+    if (state.searchFilters.hasNote) params.set("has_note", "1");
+    state.searchFilters.reviewStates.forEach((value) => params.append("review_state", value));
+    state.searchFilters.staleness.forEach((value) => params.append("staleness", value));
+    state.searchFilters.contexts.forEach((value) => params.append("context", value));
+    if (state.searchFilters.profile) params.set("profile", state.searchFilters.profile.trim().toLowerCase());
+
+    const response = await fetch(`/api/search?${params.toString()}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Search failed with ${response.status}`);
+    }
+    const payload = await response.json();
+    if (requestId !== state.searchRequestId) return;
+    state.searchData = payload;
+
+    const visibleBubbleIds = new Set((payload.bubbles ?? []).map((bubble) => bubble.id));
+    if (payload.bubbles?.[0] && !visibleBubbleIds.has(state.selectedBubbleId)) {
+      primeSelectedBubble(payload.bubbles[0].id);
+    }
+  } catch (error) {
+    if (requestId !== state.searchRequestId) return;
+    console.error("Failed to load search results:", error);
+    state.searchData = {
+      query: state.query,
+      count: 0,
+      returned_count: 0,
+      bubbles: [],
+      truncated: false,
+    };
+  } finally {
+    if (requestId !== state.searchRequestId) return;
+    state.searchLoading = false;
+    if (renderAfter && state.view === "search") {
+      renderMain();
+      renderDetail();
+    }
   }
 };
 
@@ -1364,6 +1652,13 @@ const loadData = async () => {
     state.briefProjectKey = state.selectedProjectKey || state.data.projects[0].project_key;
   }
 
+  if (searchHasCriteria()) {
+    await loadSearch({ renderAfter: false });
+  } else {
+    state.searchData = null;
+    state.searchLoading = false;
+  }
+
   render();
   if (state.selectedBubbleId) {
     void loadBubbleDetail(state.selectedBubbleId);
@@ -1378,21 +1673,47 @@ const loadData = async () => {
 
 elements.navLinks.forEach((link) => {
   link.addEventListener("click", () => {
-    state.query = "";
-    elements.searchInput.value = "";
     setView(link.dataset.view);
+    if (link.dataset.view === "search" && searchHasCriteria()) {
+      void loadSearch();
+    }
   });
 });
 
 elements.searchInput.addEventListener("input", (event) => {
   state.query = event.target.value;
-  if (state.query.trim()) {
-    state.view = "search";
-  } else if (state.view === "search") {
-    state.view = state.previousView === "search" ? "recent" : state.previousView;
+  if (state.query.trim() && state.view !== "search") {
+    setView("search", { preserveSearch: true });
   }
-  syncNav();
-  renderMain();
+  if (searchHasCriteria()) {
+    if (state.view === "search") {
+      renderMain();
+      renderDetail();
+    }
+    void loadSearch();
+    return;
+  }
+  state.searchData = null;
+  state.searchLoading = false;
+  state.searchRequestId += 1;
+  if (state.view === "search") {
+    renderMain();
+    renderDetail();
+  }
+});
+
+elements.mainContent.addEventListener("input", (event) => {
+  if (event.target.matches("[data-profile-input]")) {
+    state.searchFilters.profile = event.target.value.trim().toLowerCase() || null;
+    if (state.view !== "search") {
+      setView("search", { preserveSearch: true });
+    } else {
+      renderMain();
+      renderDetail();
+    }
+    void loadSearch();
+    return;
+  }
 });
 
 elements.mainContent.addEventListener("change", (event) => {
@@ -1464,9 +1785,62 @@ document.addEventListener("click", (event) => {
 
   const viewButton = event.target.closest("[data-view]");
   if (viewButton && viewButton.closest(".overview")) {
-    state.query = "";
-    elements.searchInput.value = "";
+    clearSearchState();
     setView(viewButton.dataset.view);
+    return;
+  }
+
+  const searchFlagButton = event.target.closest("[data-search-flag]");
+  if (searchFlagButton) {
+    const key = searchFlagButton.dataset.searchFlag;
+    state.searchFilters[key] = !state.searchFilters[key];
+    if (state.view !== "search") {
+      setView("search", { preserveSearch: true });
+    } else {
+      renderMain();
+      renderDetail();
+    }
+    void loadSearch();
+    return;
+  }
+
+  const searchFilterButton = event.target.closest("[data-search-filter]");
+  if (searchFilterButton) {
+    toggleSearchListFilter(
+      searchFilterButton.dataset.searchFilter,
+      searchFilterButton.dataset.searchFilterValue
+    );
+    if (state.view !== "search") {
+      setView("search", { preserveSearch: true });
+    } else {
+      renderMain();
+      renderDetail();
+    }
+    void loadSearch();
+    return;
+  }
+
+  const profileChip = event.target.closest("[data-profile-chip]");
+  if (profileChip) {
+    const val = profileChip.dataset.profileChip;
+    state.searchFilters.profile = state.searchFilters.profile === val ? null : val;
+    if (state.view !== "search") {
+      setView("search", { preserveSearch: true });
+    } else {
+      renderMain();
+      renderDetail();
+    }
+    void loadSearch();
+    return;
+  }
+
+  const searchResetButton = event.target.closest("[data-search-reset]");
+  if (searchResetButton) {
+    clearSearchState();
+    if (state.view === "search") {
+      renderMain();
+      renderDetail();
+    }
     return;
   }
 
