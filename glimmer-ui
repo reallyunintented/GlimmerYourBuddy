@@ -37,6 +37,11 @@ REVIEW_STATES = (
     "resolved",
     "stale",
 )
+MATTER_CONTEXTS = (
+    "hint",
+    "comment",
+    "random",
+)
 REVIEW_STATE_ALIASES = {
     "open": "active",
     "used": "resolved",
@@ -55,6 +60,7 @@ STALE_NEVER_USED_DAYS = 21
 STALE_OPEN_UNUSED_DAYS = 14
 STALE_USED_UNUSED_DAYS = 30
 HIGH_USE_COUNT = 3
+SEARCH_MAX_LIMIT = 500
 RECURRENCE_STOP_WORDS = {
     "about",
     "after",
@@ -395,11 +401,21 @@ def normalize_review_state(value: str | None, default: str = DEFAULT_REVIEW_STAT
     return review_state
 
 
+def normalize_matter_context(value: str | None, default: str = "") -> str:
+    context = str(value or "").strip().lower()
+    if not context:
+        return default
+    if context not in MATTER_CONTEXTS:
+        return default
+    return context
+
+
 def normalize_matter(value: dict | None) -> dict:
     value = value if isinstance(value, dict) else {}
     review_state = normalize_review_state(value.get("review_state"))
     return {
         "note": str(value.get("note") or "").strip(),
+        "context": normalize_matter_context(value.get("context")),
         "marked_at": value.get("marked_at"),
         "updated_at": value.get("updated_at"),
         "review_state": review_state,
@@ -674,11 +690,13 @@ def normalize_bubble(entry: dict, source: str) -> dict:
         "git_branch": entry.get("git_branch"),
         "is_repo_root": entry.get("is_repo_root"),
         "raw_path": entry.get("raw_path"),
+        "session_profile": entry.get("session_profile"),
     }
     normalized["id"] = bubble_id(normalized)
     normalized["preview"] = truncate_text(normalized["text"], 120)
     normalized["mattered"] = False
     normalized["matter_note"] = ""
+    normalized["matter_context"] = ""
     normalized["mattered_at"] = None
     normalized["matter_updated_at"] = None
     normalized["review_state"] = None
@@ -742,6 +760,7 @@ def apply_matters(bubbles: list[dict], matters: dict[str, dict]) -> None:
             continue
         bubble["mattered"] = True
         bubble["matter_note"] = matter.get("note") or ""
+        bubble["matter_context"] = matter.get("context") or ""
         bubble["mattered_at"] = matter.get("marked_at")
         bubble["matter_updated_at"] = matter.get("updated_at")
         bubble["review_state"] = matter.get("review_state") or DEFAULT_REVIEW_STATE
@@ -754,6 +773,7 @@ def upsert_matter(
     *,
     marked: bool,
     note: str,
+    context: str = "",
     now: str | None = None,
 ) -> dict | None:
     if not marked:
@@ -764,6 +784,10 @@ def upsert_matter(
     existing = normalize_matter(matters.get(bubble_id))
     matter = {
         "note": note.strip(),
+        "context": normalize_matter_context(
+            context,
+            default=existing.get("context") or "",
+        ),
         "marked_at": existing.get("marked_at") or timestamp,
         "updated_at": timestamp,
         "review_state": existing.get("review_state") or DEFAULT_REVIEW_STATE,
@@ -1299,13 +1323,112 @@ def build_brief_view(
     }
 
 
-def build_search_view(index: dict, query: str, mattered_only: bool = False) -> dict:
-    needle = query.strip().casefold()
-    if not needle:
+def split_query_values(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    items = []
+    for value in values or []:
+        for part in str(value or "").split(","):
+            normalized = part.strip()
+            if normalized:
+                items.append(normalized)
+    return items
+
+
+def normalize_search_review_states(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    states = []
+    for value in split_query_values(values):
+        normalized = normalize_review_state(value, default="")
+        if normalized and normalized not in states:
+            states.append(normalized)
+    return states
+
+
+def normalize_search_staleness(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    buckets = []
+    for value in split_query_values(values):
+        normalized = str(value or "").strip().lower()
+        if normalized in STALENESS_BUCKETS and normalized not in buckets:
+            buckets.append(normalized)
+    return buckets
+
+
+def normalize_search_contexts(values: list[str] | tuple[str, ...] | None) -> list[str]:
+    contexts = []
+    for value in split_query_values(values):
+        normalized = normalize_matter_context(value, default="")
+        if normalized and normalized not in contexts:
+            contexts.append(normalized)
+    return contexts
+
+
+def normalize_search_limit(value) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 1:
+        return None
+    return min(parsed, SEARCH_MAX_LIMIT)
+
+
+def normalize_search_offset(value) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
+def build_search_view(
+    index: dict,
+    query: str,
+    mattered_only: bool = False,
+    *,
+    review_states: list[str] | tuple[str, ...] | None = None,
+    staleness: list[str] | tuple[str, ...] | None = None,
+    contexts: list[str] | tuple[str, ...] | None = None,
+    has_note: bool = False,
+    profile: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict:
+    query_text = str(query or "")
+    needle = query_text.strip().casefold()
+    normalized_review_states = normalize_search_review_states(review_states)
+    normalized_staleness = normalize_search_staleness(staleness)
+    normalized_contexts = normalize_search_contexts(contexts)
+    normalized_profile = (profile or "").strip().lower() or None
+    normalized_limit = normalize_search_limit(limit)
+    normalized_offset = normalize_search_offset(offset)
+
+    has_filters = any(
+        (
+            mattered_only,
+            normalized_review_states,
+            normalized_staleness,
+            normalized_contexts,
+            has_note,
+            normalized_profile,
+        )
+    )
+    if not needle and not has_filters:
         return {
             "generated_at": index["generated_at"],
-            "query": query,
+            "query": query_text,
             "count": 0,
+            "returned_count": 0,
+            "offset": normalized_offset,
+            "limit": normalized_limit,
+            "truncated": False,
+            "filters": {
+                "mattered_only": mattered_only,
+                "review_states": normalized_review_states,
+                "staleness": normalized_staleness,
+                "contexts": normalized_contexts,
+                "has_note": has_note,
+                "profile": normalized_profile,
+            },
             "bubbles": [],
         }
 
@@ -1315,25 +1438,53 @@ def build_search_view(index: dict, query: str, mattered_only: bool = False) -> d
 
     matches = []
     for bubble in bubbles:
+        if normalized_review_states and bubble.get("review_state") not in normalized_review_states:
+            continue
+        if normalized_staleness and bubble.get("staleness_bucket") not in normalized_staleness:
+            continue
+        if normalized_contexts and bubble.get("matter_context") not in normalized_contexts:
+            continue
+        if has_note and not str(bubble.get("matter_note") or "").strip():
+            continue
+        if normalized_profile is not None and bubble.get("session_profile") != normalized_profile:
+            continue
         haystack = " ".join(
             str(part or "")
             for part in (
                 bubble.get("text"),
                 bubble.get("matter_note"),
+                bubble.get("matter_context"),
                 bubble.get("project_name"),
                 bubble.get("git_branch"),
                 bubble.get("companion"),
                 bubble.get("trigger_type"),
+                bubble.get("review_state"),
+                bubble.get("staleness_bucket"),
             )
         ).casefold()
-        if needle in haystack:
+        if not needle or needle in haystack:
             matches.append(bubble)
+
+    returned = matches[normalized_offset:]
+    if normalized_limit is not None:
+        returned = returned[:normalized_limit]
 
     return {
         "generated_at": index["generated_at"],
-        "query": query,
+        "query": query_text,
         "count": len(matches),
-        "bubbles": matches,
+        "returned_count": len(returned),
+        "offset": normalized_offset,
+        "limit": normalized_limit,
+        "truncated": normalized_offset + len(returned) < len(matches),
+        "filters": {
+            "mattered_only": mattered_only,
+            "review_states": normalized_review_states,
+            "staleness": normalized_staleness,
+            "contexts": normalized_contexts,
+            "has_note": has_note,
+        },
+        "bubbles": returned,
     }
 
 
@@ -1718,7 +1869,24 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             query = (params.get("q") or [""])[0]
             mattered_only = (params.get("mattered_only") or ["0"])[0] in {"1", "true", "yes"}
-            self.send_json(build_search_view(index, query, mattered_only))
+            has_note = (params.get("has_note") or ["0"])[0] in {"1", "true", "yes"}
+            profile = (params.get("profile") or [None])[0] or None
+            limit = normalize_search_limit((params.get("limit") or [None])[0])
+            offset = normalize_search_offset((params.get("offset") or [0])[0])
+            self.send_json(
+                build_search_view(
+                    index,
+                    query,
+                    mattered_only,
+                    review_states=params.get("review_state"),
+                    staleness=params.get("staleness"),
+                    contexts=params.get("context"),
+                    has_note=has_note,
+                    profile=profile,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
             return
 
         if parsed.path.startswith("/api/bubbles/"):
@@ -1775,6 +1943,11 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         bubble_id = str(payload.get("bubble_id") or "").strip()
         marked = bool(payload.get("marked"))
         note = str(payload.get("note") or "").strip()
+        context = str(
+            payload.get("context")
+            if "context" in payload
+            else payload.get("matter_context") or ""
+        ).strip()
         if not bubble_id:
             self.send_error(400, "bubble_id is required")
             return
@@ -1793,6 +1966,7 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
                     bubble_id,
                     marked=marked,
                     note=note,
+                    context=context,
                 ),
             )
             record_usage_for_index(

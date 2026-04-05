@@ -190,6 +190,7 @@ def build_recurrence_fixture(module, glimmer_dir: Path) -> dict[str, str]:
             {
                 ids["focus"]: {
                     "note": "Need review on direction signal",
+                    "context": "hint",
                     "marked_at": "2026-04-03T10:06:00+00:00",
                     "updated_at": "2026-04-03T10:06:00+00:00",
                     "review_state": "unreviewed",
@@ -197,6 +198,7 @@ def build_recurrence_fixture(module, glimmer_dir: Path) -> dict[str, str]:
                 },
                 ids["after"]: {
                     "note": "Direction signal remains open in alpha",
+                    "context": "comment",
                     "marked_at": "2026-04-03T10:07:00+00:00",
                     "updated_at": "2026-04-03T10:08:00+00:00",
                     "review_state": "open",
@@ -204,6 +206,7 @@ def build_recurrence_fixture(module, glimmer_dir: Path) -> dict[str, str]:
                 },
                 ids["beta"]: {
                     "note": "Direction signal recurring concern in beta",
+                    "context": "random",
                     "marked_at": "2026-04-03T11:11:00+00:00",
                     "updated_at": "2026-04-03T11:12:00+00:00",
                     "review_state": "used",
@@ -470,6 +473,7 @@ class GlimmerUIIndexTests(unittest.TestCase):
                 glimmer_dir,
                 mattered={
                     "note": "This changed the direction.",
+                    "context": "hint",
                     "marked_at": "2026-04-03T11:00:00+00:00",
                     "updated_at": "2026-04-03T11:05:00+00:00",
                     "review_state": "open",
@@ -482,6 +486,7 @@ class GlimmerUIIndexTests(unittest.TestCase):
             self.assertEqual(index["overview"]["mattered_count"], 1)
             self.assertTrue(index["bubbles"][0]["mattered"])
             self.assertEqual(index["bubbles"][0]["matter_note"], "This changed the direction.")
+            self.assertEqual(index["bubbles"][0]["matter_context"], "hint")
             self.assertEqual(index["bubbles"][0]["review_state"], "active")
             self.assertEqual(index["bubbles"][0]["reviewed_at"], "2026-04-03T11:07:00+00:00")
             self.assertEqual(index["sessions"][0]["mattered_count"], 1)
@@ -543,6 +548,7 @@ class GlimmerUIApiTests(unittest.TestCase):
                 glimmer_dir,
                 mattered={
                     "note": "This changed the direction.",
+                    "context": "hint",
                     "marked_at": "2026-04-03T11:00:00+00:00",
                     "updated_at": "2026-04-03T11:05:00+00:00",
                     "review_state": "open",
@@ -553,7 +559,14 @@ class GlimmerUIApiTests(unittest.TestCase):
             index = self.module.build_index(glimmer_dir)
             mattered = self.module.build_mattered_view(index)
             review = self.module.build_review_view(index)
-            search = self.module.build_search_view(index, "direction")
+            search = self.module.build_search_view(
+                index,
+                "",
+                mattered_only=True,
+                review_states=["active"],
+                contexts=["hint"],
+                has_note=True,
+            )
             bubble = self.module.build_bubble_view(index, bubble_id)
 
             self.assertEqual(mattered["count"], 1)
@@ -562,10 +575,134 @@ class GlimmerUIApiTests(unittest.TestCase):
             self.assertEqual(review["counts"]["active"], 1)
             self.assertEqual(review["groups"]["active"][0]["id"], bubble_id)
             self.assertEqual(search["count"], 1)
+            self.assertEqual(search["filters"]["contexts"], ["hint"])
             self.assertEqual(search["bubbles"][0]["id"], bubble_id)
             self.assertEqual(bubble["bubble"]["id"], bubble_id)
             self.assertEqual(bubble["session"]["session_id"], "sess-1")
             self.assertEqual(bubble["project"]["project_key"], "alpha")
+
+    def test_build_search_view_supports_filter_only_queries_and_pagination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            ids = build_recurrence_fixture(self.module, glimmer_dir)
+
+            index = self.module.build_index(glimmer_dir)
+            search = self.module.build_search_view(
+                index,
+                "",
+                mattered_only=True,
+                staleness=["active", "fading", "stale"],
+                contexts=["comment"],
+                has_note=True,
+                limit=1,
+                offset=0,
+            )
+
+            self.assertEqual(search["count"], 1)
+            self.assertEqual(search["returned_count"], 1)
+            self.assertFalse(search["truncated"])
+            self.assertEqual(search["bubbles"][0]["id"], ids["after"])
+
+    def test_normalize_bubble_includes_session_profile(self):
+        entry = {
+            "timestamp": "2026-04-05T00:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "hello",
+            "session_profile": "pet",
+        }
+        bubble = self.module.normalize_bubble(entry, "events")
+        self.assertEqual(bubble["session_profile"], "pet")
+
+    def test_normalize_bubble_session_profile_none_when_absent(self):
+        entry = {
+            "timestamp": "2026-04-05T00:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "hello",
+        }
+        bubble = self.module.normalize_bubble(entry, "events")
+        self.assertIsNone(bubble["session_profile"])
+
+    def test_build_search_view_filters_by_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+
+            event_pet = {
+                "timestamp": "2026-04-05T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "bubble",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "pet-sess",
+                "cwd": "/work",
+                "project_root": "/work",
+                "project_name": "work",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "session_profile": "pet",
+                "trigger_type": "buddy_pet",
+                "trigger_confidence": "exact",
+            }
+
+            event_normal = {
+                "timestamp": "2026-04-05T11:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "bubble",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "normal-sess",
+                "cwd": "/work",
+                "project_root": "/work",
+                "project_name": "work",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "session_profile": None,
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            }
+
+            eventsfile = glimmer_dir / "events.jsonl"
+            write_jsonl(eventsfile, [event_pet, event_normal])
+
+            index = self.module.build_index(glimmer_dir)
+            search_pet = self.module.build_search_view(index, "bubble", profile="pet")
+            search_all = self.module.build_search_view(index, "bubble")
+
+            self.assertEqual(search_pet["count"], 1)
+            self.assertEqual(search_pet["bubbles"][0]["session_profile"], "pet")
+            self.assertEqual(search_all["count"], 2)
+
+    def test_build_search_view_profile_filter_normalizes_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            sessions_dir = glimmer_dir / "sessions"
+            sessions_dir.mkdir(parents=True)
+
+            event = {
+                "timestamp": "2026-04-05T10:00:00+00:00",
+                "companion": "Glimmer",
+                "text": "test",
+                "source": "auto",
+                "bubble_seq": 1,
+                "session_id": "sess",
+                "cwd": "/work",
+                "project_root": "/work",
+                "project_name": "work",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "session_profile": "pet",
+                "trigger_type": "unknown",
+                "trigger_confidence": "none",
+            }
+
+            eventsfile = glimmer_dir / "events.jsonl"
+            write_jsonl(eventsfile, [event])
+
+            index = self.module.build_index(glimmer_dir)
+            search = self.module.build_search_view(index, "", profile="  PET  ")
+
+            self.assertEqual(search["count"], 1)
 
     def test_review_and_bubble_views_include_resurface_and_recurrence_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -648,12 +785,15 @@ class GlimmerUIApiTests(unittest.TestCase):
             bubble_id,
             marked=True,
             note="Worth revisiting later.",
+            context="hint",
             now="2026-04-03T11:10:00+00:00",
         )
 
         self.assertEqual(matter["review_state"], "unreviewed")
+        self.assertEqual(matter["context"], "hint")
         self.assertIsNone(matter["reviewed_at"])
         self.assertEqual(matters[bubble_id]["review_state"], "unreviewed")
+        self.assertEqual(matters[bubble_id]["context"], "hint")
         self.assertEqual(matters[bubble_id]["marked_at"], "2026-04-03T11:10:00+00:00")
 
     def test_update_review_state_updates_matter_metadata(self):
@@ -1029,14 +1169,18 @@ class GlimmerUIServerTests(unittest.TestCase):
                     "bubble_id": bubble_id,
                     "marked": True,
                     "note": "Keep this one.",
+                    "context": "comment",
                 },
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
                 self.assertTrue(payload["ok"])
+                self.assertEqual(payload["matter"]["context"], "comment")
 
             usage = self.module.load_usage(glimmer_dir / self.module.USAGE_FILE)
             self.assertEqual(usage[bubble_id]["use_count"], 1)
             self.assertEqual(usage[bubble_id]["use_sources"], ["ui.matter_toggle"])
+            stored_matters = self.module.load_matters(glimmer_dir / self.module.MATTERS_FILE)
+            self.assertEqual(stored_matters[bubble_id]["context"], "comment")
 
             with self.post_json(
                 f"http://127.0.0.1:{server.server_port}/api/review-state",
@@ -1054,6 +1198,35 @@ class GlimmerUIServerTests(unittest.TestCase):
                 usage[bubble_id]["use_sources"],
                 ["ui.matter_toggle", "ui.review_state"],
             )
+
+    def test_search_endpoint_supports_filter_only_queries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_archive_fixture(
+                self.module,
+                glimmer_dir,
+                mattered={
+                    "note": "This changed the direction.",
+                    "context": "hint",
+                    "marked_at": "2026-04-03T11:00:00+00:00",
+                    "updated_at": "2026-04-03T11:05:00+00:00",
+                    "review_state": "open",
+                    "reviewed_at": "2026-04-03T11:07:00+00:00",
+                },
+            )
+            server = self.start_server(glimmer_dir)
+
+            search_url = (
+                f"http://127.0.0.1:{server.server_port}/api/search"
+                "?mattered_only=1&review_state=active&context=hint&has_note=1"
+            )
+            with urllib.request.urlopen(search_url) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["filters"]["contexts"], ["hint"])
+            self.assertEqual(payload["filters"]["review_states"], ["active"])
+            self.assertEqual(payload["bubbles"][0]["matter_context"], "hint")
 
 
 if __name__ == "__main__":
