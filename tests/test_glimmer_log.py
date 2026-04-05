@@ -382,6 +382,12 @@ class GlimmerLogMatterCommandTests(unittest.TestCase):
         )
         return completed.stdout
 
+    def load_usage(self) -> dict:
+        usage_path = self.glimmer_dir / "usage.json"
+        if not usage_path.exists():
+            return {}
+        return json.loads(usage_path.read_text(encoding="utf-8"))
+
     def test_mark_latest_creates_mattered_entry(self):
         self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
 
@@ -416,6 +422,37 @@ class GlimmerLogMatterCommandTests(unittest.TestCase):
         payload = json.loads(output)
         self.assertEqual(len(payload["groups"]["used"]), 1)
         self.assertEqual(payload["groups"]["used"][0]["id"], self.latest_bubble_id)
+
+    def test_mark_and_review_state_record_usage(self):
+        self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
+
+        usage = self.load_usage()
+        self.assertEqual(usage[self.latest_bubble_id]["use_count"], 1)
+        self.assertEqual(
+            usage[self.latest_bubble_id]["use_sources"],
+            ["cli.matter_toggle"],
+        )
+
+        self.run_glimmer_log("--review-state", "latest", "used")
+
+        usage = self.load_usage()
+        self.assertEqual(usage[self.latest_bubble_id]["use_count"], 2)
+        self.assertEqual(
+            usage[self.latest_bubble_id]["use_sources"],
+            ["cli.matter_toggle", "cli.review_state"],
+        )
+
+    def test_mattered_and_review_views_record_usage(self):
+        self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
+        self.run_glimmer_log("--mattered", "--json")
+        self.run_glimmer_log("--review", "unreviewed", "--json")
+
+        usage = self.load_usage()
+        self.assertEqual(usage[self.latest_bubble_id]["use_count"], 3)
+        self.assertEqual(
+            usage[self.latest_bubble_id]["use_sources"],
+            ["cli.matter_toggle", "cli.mattered", "cli.review"],
+        )
 
 
 class GlimmerLogBriefCommandTests(unittest.TestCase):
@@ -582,6 +619,12 @@ class GlimmerLogBriefCommandTests(unittest.TestCase):
         )
         return completed.stdout
 
+    def load_usage(self) -> dict:
+        usage_path = self.glimmer_dir / "usage.json"
+        if not usage_path.exists():
+            return {}
+        return json.loads(usage_path.read_text(encoding="utf-8"))
+
     def test_brief_json_returns_project_summary(self):
         output = self.run_glimmer_log("--brief", "--project", "alpha", "--json")
         payload = json.loads(output)
@@ -604,6 +647,16 @@ class GlimmerLogBriefCommandTests(unittest.TestCase):
 
         self.assertIn("Brief: alpha", output)
         self.assertIn("Open items", output)
+
+    def test_brief_records_usage_once_per_returned_bubble(self):
+        self.run_glimmer_log("--brief", "--project", "alpha", "--json")
+
+        usage = self.load_usage()
+        self.assertEqual(usage[self.ids["focus"]]["use_count"], 1)
+        self.assertEqual(usage[self.ids["focus"]]["use_sources"], ["cli.brief"])
+        self.assertEqual(usage[self.ids["after"]]["use_count"], 1)
+        self.assertEqual(usage[self.ids["after"]]["use_sources"], ["cli.brief"])
+        self.assertNotIn(self.ids["beta"], usage)
 
 
 if __name__ == "__main__":

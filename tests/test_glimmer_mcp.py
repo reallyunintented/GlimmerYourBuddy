@@ -71,6 +71,26 @@ def build_fixture(glimmer_dir):
     )
 
 
+def mark_bubble(glimmer_dir, bubble_id, *, note="Keep this.", review_state="unreviewed", reviewed_at=None):
+    (glimmer_dir / "mattered.json").write_text(
+        json.dumps(
+            {
+                bubble_id: {
+                    "note": note,
+                    "marked_at": "2026-04-03T10:06:00+00:00",
+                    "updated_at": reviewed_at or "2026-04-03T10:06:00+00:00",
+                    "review_state": review_state,
+                    "reviewed_at": reviewed_at,
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def build_many_bubbles_fixture(glimmer_dir, count=60):
     sessions_dir = glimmer_dir / "sessions"
     sessions_dir.mkdir(parents=True)
@@ -298,6 +318,70 @@ class TestToolRegistration(unittest.TestCase):
         # FastMCP stores tools in _tool_manager._tools (dict keyed by tool name)
         tools = server._tool_manager._tools
         self.assertEqual(set(tools.keys()), expected)
+
+
+@unittest.skipUnless(HAS_MCP, "mcp package not installed")
+class TestUsageRecording(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module()
+
+    def load_usage(self, glimmer_dir):
+        return self.module._ui.load_usage(glimmer_dir / self.module._ui.USAGE_FILE)
+
+    def test_get_brief_records_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_fixture(glimmer_dir)
+            bubble_id = self.module._ui.build_index(glimmer_dir)["bubbles"][0]["id"]
+            mark_bubble(glimmer_dir, bubble_id, review_state="open", reviewed_at="2026-04-03T10:09:00+00:00")
+
+            with patch.object(self.module, "DEFAULT_GLIMMER_DIR", glimmer_dir):
+                payload = json.loads(self.module.get_brief())
+
+            self.assertIn("summary", payload)
+            usage = self.load_usage(glimmer_dir)
+            self.assertEqual(usage[bubble_id]["use_count"], 1)
+            self.assertEqual(usage[bubble_id]["use_sources"], ["mcp.get_brief"])
+
+    def test_list_mattered_and_get_review_record_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_fixture(glimmer_dir)
+            bubble_id = self.module._ui.build_index(glimmer_dir)["bubbles"][0]["id"]
+            mark_bubble(glimmer_dir, bubble_id, review_state="used", reviewed_at="2026-04-03T10:09:00+00:00")
+
+            with patch.object(self.module, "DEFAULT_GLIMMER_DIR", glimmer_dir):
+                mattered_payload = json.loads(self.module.list_mattered())
+                review_payload = json.loads(self.module.get_review())
+
+            self.assertEqual(mattered_payload["count"], 1)
+            self.assertEqual(review_payload["counts"]["used"], 1)
+            usage = self.load_usage(glimmer_dir)
+            self.assertEqual(usage[bubble_id]["use_count"], 2)
+            self.assertEqual(
+                usage[bubble_id]["use_sources"],
+                ["mcp.get_review", "mcp.list_mattered"],
+            )
+
+    def test_search_and_get_bubble_record_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_fixture(glimmer_dir)
+            bubble_id = self.module._ui.build_index(glimmer_dir)["bubbles"][0]["id"]
+
+            with patch.object(self.module, "DEFAULT_GLIMMER_DIR", glimmer_dir):
+                search_payload = json.loads(self.module.search_bubbles("ship"))
+                bubble_payload = json.loads(self.module.get_bubble(bubble_id))
+
+            self.assertEqual(search_payload["count"], 1)
+            self.assertEqual(bubble_payload["bubble"]["id"], bubble_id)
+            usage = self.load_usage(glimmer_dir)
+            self.assertEqual(usage[bubble_id]["use_count"], 2)
+            self.assertEqual(
+                usage[bubble_id]["use_sources"],
+                ["mcp.get_bubble", "mcp.search_bubbles"],
+            )
 
 
 if __name__ == "__main__":

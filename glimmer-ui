@@ -29,6 +29,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 MATTERS_FILE = "mattered.json"
+USAGE_FILE = "usage.json"
 DEFAULT_REVIEW_STATE = "unreviewed"
 REVIEW_STATES = (
     DEFAULT_REVIEW_STATE,
@@ -100,6 +101,23 @@ DEFAULT_GLIMMER_DIR = Path(
 )
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
+USAGE_SOURCES = {
+    "ui.detail",
+    "ui.search_open",
+    "ui.brief",
+    "ui.matter_toggle",
+    "ui.review_state",
+    "cli.brief",
+    "cli.mattered",
+    "cli.review",
+    "cli.matter_toggle",
+    "cli.review_state",
+    "mcp.get_brief",
+    "mcp.list_mattered",
+    "mcp.get_review",
+    "mcp.search_bubbles",
+    "mcp.get_bubble",
+}
 
 
 def set_permissions(path: Path, mode: int) -> None:
@@ -372,6 +390,148 @@ def mutate_matters(path: Path, callback):
         return result
 
 
+def load_usage(path: Path) -> dict[str, dict]:
+    return _load_usage_unlocked(path)
+
+
+def _load_usage_unlocked(path: Path) -> dict[str, dict]:
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    usage = {}
+    for bubble_id, value in parsed.items():
+        if not isinstance(bubble_id, str) or not isinstance(value, dict):
+            continue
+        usage[bubble_id] = normalize_usage(value)
+    return usage
+
+
+def normalize_usage(value: dict | None) -> dict:
+    value = value if isinstance(value, dict) else {}
+    last_used_at = value.get("last_used_at")
+    if not isinstance(last_used_at, str) or not last_used_at.strip():
+        last_used_at = None
+    try:
+        use_count = int(value.get("use_count") or 0)
+    except (TypeError, ValueError):
+        use_count = 0
+    use_count = max(0, use_count)
+    raw_sources = value.get("use_sources")
+    if not isinstance(raw_sources, list):
+        raw_sources = []
+    use_sources = sorted(
+        {
+            str(source).strip()
+            for source in raw_sources
+            if str(source).strip() in USAGE_SOURCES
+        }
+    )
+    return {
+        "last_used_at": last_used_at,
+        "use_count": use_count,
+        "use_sources": use_sources,
+    }
+
+
+def save_usage(path: Path, usage: dict[str, dict]) -> None:
+    with advisory_lock(lock_path_for(path)):
+        _save_usage_unlocked(path, usage)
+
+
+def _save_usage_unlocked(path: Path, usage: dict[str, dict]) -> None:
+    payload = json.dumps(usage, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    write_private_text(path, payload)
+
+
+def mutate_usage(path: Path, callback):
+    with advisory_lock(lock_path_for(path)):
+        usage = _load_usage_unlocked(path)
+        result = callback(usage)
+        _save_usage_unlocked(path, usage)
+        return result
+
+
+def apply_usage(bubbles: list[dict], usage: dict[str, dict]) -> None:
+    for bubble in bubbles:
+        record = usage.get(bubble["id"])
+        if not record:
+            bubble["last_used_at"] = None
+            bubble["use_count"] = 0
+            bubble["use_sources"] = []
+            continue
+        bubble["last_used_at"] = record.get("last_used_at")
+        bubble["use_count"] = int(record.get("use_count") or 0)
+        bubble["use_sources"] = list(record.get("use_sources") or [])
+
+
+def record_usage(
+    usage: dict[str, dict],
+    bubble_ids: list[str],
+    source: str,
+    *,
+    known_bubble_ids: set[str] | None = None,
+    now: str | None = None,
+) -> list[str]:
+    if source not in USAGE_SOURCES:
+        raise ValueError(f"usage source must be one of: {', '.join(sorted(USAGE_SOURCES))}")
+    seen = set()
+    recorded = []
+    timestamp = now or datetime.now().isoformat()
+    for bubble_id in bubble_ids:
+        if not isinstance(bubble_id, str):
+            continue
+        normalized_bubble_id = bubble_id.strip()
+        if not normalized_bubble_id or normalized_bubble_id in seen:
+            continue
+        seen.add(normalized_bubble_id)
+        if known_bubble_ids is not None and normalized_bubble_id not in known_bubble_ids:
+            continue
+        existing = normalize_usage(usage.get(normalized_bubble_id))
+        sources = set(existing.get("use_sources") or [])
+        sources.add(source)
+        usage[normalized_bubble_id] = {
+            "last_used_at": timestamp,
+            "use_count": int(existing.get("use_count") or 0) + 1,
+            "use_sources": sorted(sources),
+        }
+        recorded.append(normalized_bubble_id)
+    return recorded
+
+
+def known_bubble_ids(index: dict) -> set[str]:
+    return {
+        bubble.get("id")
+        for bubble in index.get("bubbles") or []
+        if isinstance(bubble.get("id"), str)
+    }
+
+
+def record_usage_for_index(
+    glimmer_dir: Path,
+    index: dict,
+    bubble_ids: list[str],
+    source: str,
+    *,
+    now: str | None = None,
+) -> list[str]:
+    usage_path = glimmer_dir / USAGE_FILE
+    return mutate_usage(
+        usage_path,
+        lambda usage: record_usage(
+            usage,
+            bubble_ids,
+            source,
+            known_bubble_ids=known_bubble_ids(index),
+            now=now,
+        ),
+    )
+
+
 def bubble_id(entry: dict) -> str:
     raw = "|".join(
         [
@@ -601,6 +761,30 @@ def recurrence_matches_for_bubble(index: dict, bubble: dict, limit: int = 3) -> 
         reverse=True,
     )
     return matches[:limit]
+
+
+def brief_bubble_ids(brief: dict) -> list[str]:
+    bubble_ids = []
+    for bubble in brief.get("top_mattered") or []:
+        if bubble.get("id"):
+            bubble_ids.append(bubble["id"])
+    for bubble in brief.get("open_items") or []:
+        if bubble.get("id"):
+            bubble_ids.append(bubble["id"])
+    for entry in brief.get("recurring_signals") or []:
+        bubble = entry.get("bubble") or {}
+        if bubble.get("id"):
+            bubble_ids.append(bubble["id"])
+    return bubble_ids
+
+
+def review_bubble_ids(review: dict) -> list[str]:
+    bubble_ids = []
+    for bubbles in (review.get("groups") or {}).values():
+        for bubble in bubbles or []:
+            if bubble.get("id"):
+                bubble_ids.append(bubble["id"])
+    return bubble_ids
 
 
 def build_resurface_hints(index: dict) -> list[dict]:
@@ -1027,7 +1211,12 @@ def build_bubble_view(index: dict, bubble_id: str) -> dict | None:
     }
 
 
-def build_sessions(events: list[dict], manifests: dict[str, dict], matters: dict[str, dict]) -> list[dict]:
+def build_sessions(
+    events: list[dict],
+    manifests: dict[str, dict],
+    matters: dict[str, dict],
+    usage: dict[str, dict],
+) -> list[dict]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for entry in events:
         session_id = entry.get("session_id")
@@ -1040,6 +1229,7 @@ def build_sessions(events: list[dict], manifests: dict[str, dict], matters: dict
         manifest = manifests.get(session_id, {})
         bubbles = sorted(grouped.get(session_id, []), key=bubble_sort_session)
         apply_matters(bubbles, matters)
+        apply_usage(bubbles, usage)
         latest = bubbles[-1] if bubbles else None
         started_at = session_field(manifest, bubbles, "started_at") or (
             bubbles[0].get("timestamp") if bubbles else None
@@ -1139,10 +1329,12 @@ def build_index(glimmer_dir: Path) -> dict:
     event_entries = load_jsonl(glimmer_dir / "events.jsonl")
     manifests = load_manifests(glimmer_dir / "sessions")
     matters = load_matters(glimmer_dir / MATTERS_FILE)
+    usage = load_usage(glimmer_dir / USAGE_FILE)
 
     bubbles = dedupe_bubbles(event_entries, log_entries)
     apply_matters(bubbles, matters)
-    sessions = build_sessions(event_entries, manifests, matters)
+    apply_usage(bubbles, usage)
+    sessions = build_sessions(event_entries, manifests, matters, usage)
     projects = build_projects(sessions)
 
     return {
@@ -1307,19 +1499,26 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
             project = (params.get("project") or [""])[0] or None
             session_id = (params.get("session") or [""])[0] or None
             cwd = (params.get("cwd") or [""])[0] or None
+            source = (params.get("source") or [""])[0] or ""
             try:
                 limit = int((params.get("limit") or [str(BRIEF_DEFAULT_LIMIT)])[0])
             except ValueError:
                 limit = BRIEF_DEFAULT_LIMIT
-            self.send_json(
-                build_brief_view(
-                    index,
-                    project=project,
-                    session_id=session_id,
-                    cwd=cwd,
-                    limit=max(1, min(limit, 10)),
-                )
+            payload = build_brief_view(
+                index,
+                project=project,
+                session_id=session_id,
+                cwd=cwd,
+                limit=max(1, min(limit, 10)),
             )
+            if source == "ui.brief":
+                record_usage_for_index(
+                    self.config["glimmer_dir"],
+                    index,
+                    brief_bubble_ids(payload),
+                    "ui.brief",
+                )
+            self.send_json(payload)
             return
 
         if parsed.path == "/api/search":
@@ -1332,11 +1531,20 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
 
         if parsed.path.startswith("/api/bubbles/"):
             index = build_index(self.config["glimmer_dir"])
+            params = parse_qs(parsed.query)
+            requested_source = (params.get("source") or [""])[0] or ""
+            source = requested_source if requested_source in {"ui.search_open", "ui.detail"} else "ui.detail"
             bubble_id = parsed.path.rsplit("/", 1)[-1]
             payload = build_bubble_view(index, bubble_id)
             if payload is None:
                 self.send_error(404, "Bubble not found")
                 return
+            record_usage_for_index(
+                self.config["glimmer_dir"],
+                index,
+                [bubble_id],
+                source,
+            )
             self.send_json(payload)
             return
 
@@ -1402,6 +1610,12 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
                     "matter": matter,
                 }
             )
+            record_usage_for_index(
+                self.config["glimmer_dir"],
+                index,
+                [bubble_id],
+                "ui.matter_toggle",
+            )
             return
 
         review_state = str(payload.get("review_state") or "").strip()
@@ -1426,6 +1640,12 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
                 "bubble_id": bubble_id,
                 "matter": matter,
             }
+        )
+        record_usage_for_index(
+            self.config["glimmer_dir"],
+            index,
+            [bubble_id],
+            "ui.review_state",
         )
 
 

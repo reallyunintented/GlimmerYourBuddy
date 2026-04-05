@@ -21,6 +21,7 @@ When you use Claude Code with Glimmer enabled, it:
 - **Lets you browse** them in a local archive UI with recent, mattered, review, project, session, and search views
 - **Lets you mark** a bubble as mattered, attach a short note, and move it through a review state
 - **Surfaces recurrence cues** so related mattered bubbles and repeated themes can come back later
+- **Tracks explicit local revisits** with `last_used_at`, `use_count`, and `use_sources`
 - **Exposes local interfaces** for people and tools through the UI, `glimmer-log`, and a small localhost JSON API
 
 It is a local-first significance layer for things your Claude buddy said that actually changed the work.
@@ -214,7 +215,7 @@ Available tools:
 - `search_bubbles` — Case-insensitive search across bubble text, notes, and metadata
 - `get_bubble` — Full detail for a single bubble including session and project context
 
-All tools are read-only. Your archive is never modified by agent queries.
+The tools do not mutate captured bubbles, mattered marks, or review state. Successful tool calls do update `usage.json` so Glimmer can track explicit local revisit activity.
 
 ### Start With a Brief
 If you want a small project-specific memory snapshot before a session starts, you now have three paths:
@@ -232,6 +233,21 @@ glimmer-claude --glimmer-brief
 ```
 
 The brief pulls from the same local mattered/review/recurrence data as the UI and API. It is meant to answer one question quickly: what should I remember before I continue here?
+
+### Explicit Local Usage Tracking
+Glimmer now keeps a local `usage.json` summary alongside the archive. This is intentionally narrow and explicit:
+
+- UI brief loads, bubble detail opens, matter toggles, and review-state changes count as use
+- `glimmer-log --brief`, `--mattered`, `--review`, `--mark`/`--unmark`, and `--review-state` count as use
+- MCP tool results count as use for the bubbles actually returned
+
+Glimmer stores only durable local facts:
+
+- `last_used_at`
+- `use_count`
+- `use_sources`
+
+This is not an inferred importance score. Glimmer does not try to guess meaning from vague behavior yet.
 
 ### Watcher Debug Output
 By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.
@@ -270,9 +286,10 @@ sessions/      one manifest per Claude run
 raw/           raw terminal recordings (can be auto-deleted)
 watcher.log    watcher debug output
 mattered.json  explicit mattered marks, notes, and review state
+usage.json     explicit local revisit summary (`last_used_at`, `use_count`, `use_sources`)
 ```
 
-Permissions are tightened to user-only by default. See [CONTRIBUTING.md](CONTRIBUTING.md) for full storage schemas and architecture details.
+Permissions are tightened to user-only by default. `usage.json` records explicit local activity only; it is not a hidden event log or an inferred ranking model. See [CONTRIBUTING.md](CONTRIBUTING.md) for full storage schemas and architecture details.
 
 ---
 
@@ -368,6 +385,7 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Local archive UI** — Recent, mattered, review, projects, sessions, and search  
 ✅ **Human signal** — Mark bubbles as mattered, attach notes, and move them through review states  
 ✅ **Recurrence cues** — Related mattered bubbles and repeated themes can resurface later  
+✅ **Usage tracking** — Explicit local revisit counts and sources across UI, CLI, and MCP  
 ✅ **Local machine interface** — `glimmer-log` mattered/review commands plus localhost JSON routes  
 ✅ **Lightweight** — Small local toolchain, minimal dependencies  
 ✅ **Privacy-first** — Everything stays on your machine  

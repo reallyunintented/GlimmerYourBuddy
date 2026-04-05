@@ -493,7 +493,14 @@ def format_ts(module, value: str | None) -> str:
 module = load_module(sys.argv[1])
 glimmer_dir = Path(sys.argv[2]).expanduser()
 output_mode = sys.argv[3]
-payload = module.build_mattered_view(module.build_index(glimmer_dir))
+index = module.build_index(glimmer_dir)
+payload = module.build_mattered_view(index)
+module.record_usage_for_index(
+    glimmer_dir,
+    index,
+    [bubble.get("id") for bubble in payload.get("bubbles", [])],
+    "cli.mattered",
+)
 
 if output_mode == "json":
     print(json.dumps(payload, ensure_ascii=False))
@@ -557,7 +564,14 @@ module = load_module(sys.argv[1])
 glimmer_dir = Path(sys.argv[2]).expanduser()
 output_mode = sys.argv[3]
 review_filter = sys.argv[4]
-payload = module.build_review_view(module.build_index(glimmer_dir))
+index = module.build_index(glimmer_dir)
+payload = module.build_review_view(index)
+module.record_usage_for_index(
+    glimmer_dir,
+    index,
+    module.review_bubble_ids(payload),
+    "cli.review",
+)
 
 if review_filter:
     if review_filter not in module.REVIEW_STATES:
@@ -647,11 +661,18 @@ project_filter = sys.argv[4] or None
 session_ref = sys.argv[5] or None
 cwd_filter = sys.argv[6] or None
 cwd_context = cwd_filter or os.getcwd()
+index = module.build_index(glimmer_dir)
 payload = module.build_brief_view(
-    module.build_index(glimmer_dir),
+    index,
     project=project_filter,
     session_id=session_ref,
     cwd=cwd_context,
+)
+module.record_usage_for_index(
+    glimmer_dir,
+    index,
+    module.brief_bubble_ids(payload),
+    "cli.brief",
 )
 
 if output_mode == "json":
@@ -804,10 +825,22 @@ matter = module.mutate_matters(
 )
 
 if marked:
+    module.record_usage_for_index(
+        glimmer_dir,
+        index,
+        [bubble["id"]],
+        "cli.matter_toggle",
+    )
     print(f'Marked {bubble["id"]}.')
     if matter and matter.get("note"):
         print(f'Note: {matter["note"]}')
 else:
+    module.record_usage_for_index(
+        glimmer_dir,
+        index,
+        [bubble["id"]],
+        "cli.matter_toggle",
+    )
     print(f'Unmarked {bubble["id"]}.')
 PY
 }
@@ -866,6 +899,12 @@ except KeyError:
 except ValueError as exc:
     print(str(exc), file=sys.stderr)
     sys.exit(1)
+module.record_usage_for_index(
+    glimmer_dir,
+    index,
+    [bubble["id"]],
+    "cli.review_state",
+)
 print(f'Set {bubble["id"]} to {matter["review_state"]}.')
 PY
 }

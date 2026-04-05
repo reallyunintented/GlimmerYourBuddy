@@ -1076,6 +1076,7 @@ const loadBrief = async ({ projectKey = currentBriefProjectKey(), force = false 
     } else if (state.selectedSessionId) {
       params.set("session", state.selectedSessionId);
     }
+    params.set("source", "ui.brief");
     const response = await fetch(`/api/brief?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`Brief failed with ${response.status}`);
@@ -1230,7 +1231,9 @@ const loadBubbleDetail = async (bubbleId) => {
   state.detailLoading = true;
   renderDetail();
   try {
-    const response = await fetch(`/api/bubbles/${encodeURIComponent(bubbleId)}`, {
+    const source = state.view === "search" ? "ui.search_open" : "ui.detail";
+    const params = new URLSearchParams({ source });
+    const response = await fetch(`/api/bubbles/${encodeURIComponent(bubbleId)}?${params.toString()}`, {
       cache: "no-store",
     });
     if (!response.ok) {

@@ -146,6 +146,10 @@ def _tool_get_bubble(index, bubble_id):
     return result
 
 
+def _json_result(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # MCP server & tool definitions
 # ---------------------------------------------------------------------------
@@ -158,39 +162,68 @@ def get_brief(
 ) -> str:
     """Get a project brief: top mattered bubbles, open items, and recurring signals."""
     index = _build_index()
-    return json.dumps(
-        _tool_get_brief(index, project=project, session_id=session_id, cwd=cwd, limit=limit),
-        ensure_ascii=False,
-        indent=2,
+    payload = _tool_get_brief(index, project=project, session_id=session_id, cwd=cwd, limit=limit)
+    _ui.record_usage_for_index(
+        DEFAULT_GLIMMER_DIR,
+        index,
+        _ui.brief_bubble_ids(payload),
+        "mcp.get_brief",
     )
+    return _json_result(payload)
 
 
 def list_mattered() -> str:
     """List all mattered bubbles sorted by recency."""
     index = _build_index()
-    return json.dumps(_tool_list_mattered(index), ensure_ascii=False, indent=2)
+    payload = _tool_list_mattered(index)
+    _ui.record_usage_for_index(
+        DEFAULT_GLIMMER_DIR,
+        index,
+        [bubble.get("id") for bubble in payload.get("bubbles") or []],
+        "mcp.list_mattered",
+    )
+    return _json_result(payload)
 
 
 def get_review() -> str:
     """Get mattered bubbles grouped by review state."""
     index = _build_index()
-    return json.dumps(_tool_get_review(index), ensure_ascii=False, indent=2)
+    payload = _tool_get_review(index)
+    _ui.record_usage_for_index(
+        DEFAULT_GLIMMER_DIR,
+        index,
+        _ui.review_bubble_ids(payload),
+        "mcp.get_review",
+    )
+    return _json_result(payload)
 
 
 def search_bubbles(query: str, mattered_only: bool = False) -> str:
     """Search bubbles by text content. Optionally restrict to mattered-only."""
     index = _build_index()
-    return json.dumps(
-        _tool_search_bubbles(index, query, mattered_only=mattered_only),
-        ensure_ascii=False,
-        indent=2,
-    )
+    payload = _tool_search_bubbles(index, query, mattered_only=mattered_only)
+    if "error" not in payload:
+        _ui.record_usage_for_index(
+            DEFAULT_GLIMMER_DIR,
+            index,
+            [bubble.get("id") for bubble in payload.get("bubbles") or []],
+            "mcp.search_bubbles",
+        )
+    return _json_result(payload)
 
 
 def get_bubble(bubble_id: str) -> str:
     """Get a single bubble by ID, including session and project context."""
     index = _build_index()
-    return json.dumps(_tool_get_bubble(index, bubble_id), ensure_ascii=False, indent=2)
+    payload = _tool_get_bubble(index, bubble_id)
+    if "error" not in payload:
+        _ui.record_usage_for_index(
+            DEFAULT_GLIMMER_DIR,
+            index,
+            [payload.get("bubble", {}).get("id")],
+            "mcp.get_bubble",
+        )
+    return _json_result(payload)
 
 
 if FastMCP is not None:

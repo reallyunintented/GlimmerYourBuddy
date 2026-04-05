@@ -327,6 +327,30 @@ class GlimmerUIIndexTests(unittest.TestCase):
             self.assertEqual(index["sessions"][0]["mattered_count"], 1)
             self.assertEqual(index["projects"][0]["mattered_count"], 1)
 
+    def test_build_index_merges_usage_into_bubbles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            bubble_id = build_archive_fixture(self.module, glimmer_dir)
+            self.module.save_usage(
+                glimmer_dir / self.module.USAGE_FILE,
+                {
+                    bubble_id: {
+                        "last_used_at": "2026-04-05T10:15:00+00:00",
+                        "use_count": 4,
+                        "use_sources": ["ui.detail", "mcp.get_bubble"],
+                    }
+                },
+            )
+
+            index = self.module.build_index(glimmer_dir)
+
+            self.assertEqual(index["bubbles"][0]["last_used_at"], "2026-04-05T10:15:00+00:00")
+            self.assertEqual(index["bubbles"][0]["use_count"], 4)
+            self.assertEqual(
+                index["bubbles"][0]["use_sources"],
+                ["mcp.get_bubble", "ui.detail"],
+            )
+
 
 class GlimmerUIApiTests(unittest.TestCase):
     @classmethod
@@ -482,6 +506,26 @@ class GlimmerUIApiTests(unittest.TestCase):
                 [],
             )
 
+    def test_save_usage_writes_private_file_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            usage_path = glimmer_dir / "usage.json"
+
+            self.module.save_usage(
+                usage_path,
+                {
+                    "bubble-1": {
+                        "last_used_at": "2026-04-05T10:15:00+00:00",
+                        "use_count": 2,
+                        "use_sources": ["ui.detail"],
+                    }
+                },
+            )
+
+            mode = stat.S_IMODE(usage_path.stat().st_mode)
+            self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
+            self.assertEqual(list(glimmer_dir.glob(".usage.json.*.tmp")), [])
+
     def test_mutate_matters_updates_existing_state_under_one_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             glimmer_dir = Path(tmp)
@@ -515,6 +559,60 @@ class GlimmerUIApiTests(unittest.TestCase):
 
             self.assertEqual(result, ["bubble-1", "bubble-2"])
             self.assertEqual(sorted(matters), ["bubble-1", "bubble-2"])
+
+    def test_mutate_usage_updates_existing_state_under_one_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            usage_path = glimmer_dir / "usage.json"
+
+            self.module.save_usage(
+                usage_path,
+                {
+                    "bubble-1": {
+                        "last_used_at": "2026-04-05T10:15:00+00:00",
+                        "use_count": 1,
+                        "use_sources": ["ui.detail"],
+                    }
+                },
+            )
+
+            def updater(usage):
+                usage["bubble-2"] = {
+                    "last_used_at": "2026-04-05T10:20:00+00:00",
+                    "use_count": 3,
+                    "use_sources": ["mcp.get_brief"],
+                }
+                return sorted(usage)
+
+            result = self.module.mutate_usage(usage_path, updater)
+            usage = self.module.load_usage(usage_path)
+
+            self.assertEqual(result, ["bubble-1", "bubble-2"])
+            self.assertEqual(sorted(usage), ["bubble-1", "bubble-2"])
+
+    def test_record_usage_dedupes_unknown_ids_and_keeps_sources_unique(self):
+        usage = {
+            "bubble-1": {
+                "last_used_at": "2026-04-05T10:15:00+00:00",
+                "use_count": 1,
+                "use_sources": ["ui.detail", "not-real"],
+            }
+        }
+
+        recorded = self.module.record_usage(
+            usage,
+            ["bubble-1", "bubble-1", "missing", "bubble-2"],
+            "ui.detail",
+            known_bubble_ids={"bubble-1", "bubble-2"},
+            now="2026-04-05T10:30:00+00:00",
+        )
+
+        self.assertEqual(recorded, ["bubble-1", "bubble-2"])
+        self.assertEqual(usage["bubble-1"]["last_used_at"], "2026-04-05T10:30:00+00:00")
+        self.assertEqual(usage["bubble-1"]["use_count"], 2)
+        self.assertEqual(usage["bubble-1"]["use_sources"], ["ui.detail"])
+        self.assertEqual(usage["bubble-2"]["use_count"], 1)
+        self.assertEqual(usage["bubble-2"]["use_sources"], ["ui.detail"])
 
     def test_bind_host_validation_requires_explicit_remote_opt_in(self):
         self.module.validate_bind_host("127.0.0.1", allow_remote=False)
@@ -616,6 +714,15 @@ class GlimmerUIServerTests(unittest.TestCase):
         self.addCleanup(thread.join, 1)
         return server
 
+    def post_json(self, url: str, payload: dict):
+        request = urllib.request.Request(
+            url,
+            method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        return urllib.request.urlopen(request)
+
     def test_health_endpoint_returns_security_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
             server = self.start_server(Path(tmp))
@@ -648,6 +755,80 @@ class GlimmerUIServerTests(unittest.TestCase):
                 payload = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(response.status, 200)
                 self.assertEqual(payload, {"ok": True})
+
+    def test_brief_and_bubble_detail_record_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            ids = build_recurrence_fixture(self.module, glimmer_dir)
+            server = self.start_server(glimmer_dir)
+
+            brief_url = (
+                f"http://127.0.0.1:{server.server_port}/api/brief"
+                "?project=alpha&source=ui.brief"
+            )
+            with urllib.request.urlopen(brief_url) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["scope"]["project_key"], "alpha")
+
+            usage = self.module.load_usage(glimmer_dir / self.module.USAGE_FILE)
+            self.assertEqual(usage[ids["focus"]]["use_count"], 1)
+            self.assertEqual(usage[ids["focus"]]["use_sources"], ["ui.brief"])
+            self.assertEqual(usage[ids["after"]]["use_count"], 1)
+            self.assertEqual(usage[ids["after"]]["use_sources"], ["ui.brief"])
+            self.assertNotIn(ids["beta"], usage)
+
+            bubble_url = (
+                f"http://127.0.0.1:{server.server_port}/api/bubbles/{ids['focus']}"
+                "?source=ui.search_open"
+            )
+            with urllib.request.urlopen(bubble_url) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(payload["bubble"]["id"], ids["focus"])
+
+            usage = self.module.load_usage(glimmer_dir / self.module.USAGE_FILE)
+            self.assertEqual(usage[ids["focus"]]["use_count"], 2)
+            self.assertEqual(
+                usage[ids["focus"]]["use_sources"],
+                ["ui.brief", "ui.search_open"],
+            )
+
+    def test_matter_and_review_post_endpoints_record_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            bubble_id = build_archive_fixture(self.module, glimmer_dir)
+            server = self.start_server(glimmer_dir)
+
+            with self.post_json(
+                f"http://127.0.0.1:{server.server_port}/api/matters",
+                {
+                    "bubble_id": bubble_id,
+                    "marked": True,
+                    "note": "Keep this one.",
+                },
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(payload["ok"])
+
+            usage = self.module.load_usage(glimmer_dir / self.module.USAGE_FILE)
+            self.assertEqual(usage[bubble_id]["use_count"], 1)
+            self.assertEqual(usage[bubble_id]["use_sources"], ["ui.matter_toggle"])
+
+            with self.post_json(
+                f"http://127.0.0.1:{server.server_port}/api/review-state",
+                {
+                    "bubble_id": bubble_id,
+                    "review_state": "used",
+                },
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+                self.assertTrue(payload["ok"])
+
+            usage = self.module.load_usage(glimmer_dir / self.module.USAGE_FILE)
+            self.assertEqual(usage[bubble_id]["use_count"], 2)
+            self.assertEqual(
+                usage[bubble_id]["use_sources"],
+                ["ui.matter_toggle", "ui.review_state"],
+            )
 
 
 if __name__ == "__main__":

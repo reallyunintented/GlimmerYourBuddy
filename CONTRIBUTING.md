@@ -28,9 +28,9 @@ The runtime is split on purpose:
 - `glimmer-watcher.py`
   Parses the raw terminal recording, extracts stable speech-bubble text, writes plain entries to `log.jsonl`, and writes richer auto-capture metadata to `events.jsonl`.
 - `glimmer-log`
-  Reads `log.jsonl` for the all-time plain view, reads `events.jsonl` plus `sessions/` for grouped session output, can mark/review mattered bubbles from the terminal, and can export a project brief in plain text, markdown, or JSON.
+  Reads `log.jsonl` for the all-time plain view, reads `events.jsonl` plus `sessions/` for grouped session output, can mark/review mattered bubbles from the terminal, can export a project brief in plain text, markdown, or JSON, and records explicit usage for the commands that surface or change mattered state.
 - `glimmer-ui`
-  Runs the local archive app over localhost, merges mattered marks and review state, builds recurrence/resurface/brief hints, and serves the frontend plus JSON API from `ui/`.
+  Runs the local archive app over localhost, merges mattered marks plus usage summaries, builds recurrence/resurface/brief hints, and serves the frontend plus JSON API from `ui/`.
 
 Important storage paths:
 
@@ -46,6 +46,8 @@ Important storage paths:
   Watcher debug output. The watcher should stay quiet on the Claude UI unless explicitly requested.
 - `~/.claude/glimmer/mattered.json`
   Explicit mattered marks, optional notes, and review metadata created in the local archive UI or CLI.
+- `~/.claude/glimmer/usage.json`
+  Explicit local revisit summary keyed by bubble id: `last_used_at`, `use_count`, and `use_sources`.
 
 ## How Capture Works
 
@@ -60,8 +62,8 @@ This is the internal flow:
 7. The watcher requires the same bubble text to survive more than one scan before it logs it.
 8. The plain bubble is appended to `log.jsonl`.
 9. The richer auto-capture event is appended to `events.jsonl`.
-10. `glimmer-ui` can layer mattered marks and review state on top of captured bubbles via `mattered.json`.
-11. Shared review, recurrence, resurface, and brief logic currently lives in `glimmer-ui` so the UI and future machine interfaces can consume the same output.
+10. `glimmer-ui` can layer mattered marks and explicit usage summaries on top of captured bubbles via `mattered.json` and `usage.json`.
+11. Shared review, recurrence, resurface, brief, and usage logic currently lives in `glimmer-ui` so the UI, CLI, and MCP can consume the same output.
 12. When the session exits, `glimmer-claude` fills in `ended_at` in the manifest and stops the watcher.
 
 Why the split exists:
@@ -69,6 +71,7 @@ Why the split exists:
 - `log.jsonl` must stay stable and simple for compatibility.
 - `events.jsonl` can evolve to hold session ids, exact repo context, trigger metadata, and future sidecar fields.
 - `mattered.json` is user-authored signal and should stay separate from passive capture data.
+- `usage.json` is explicit local activity and should stay separate from both passive capture data and mattered annotations.
 - review, recurrence, and brief logic should stay shared in backend builders, not duplicated across every client.
 - watcher debug output belongs in `watcher.log`, not on the shared fullscreen Claude terminal.
 
@@ -122,6 +125,30 @@ These tags belong in `events.jsonl`, not in `log.jsonl`.
 
 Trigger attribution is separate from project context. Do not collapse them into a single reason field.
 
+## Usage Tracking
+
+Usage tracking is intentionally explicit and local-first.
+
+What currently counts as use:
+
+- UI brief loads, bubble detail opens, matter toggles, and review-state changes
+- `glimmer-log --brief`, `--mattered`, `--review`, `--mark`/`--unmark`, and `--review-state`
+- MCP tool results for bubbles that were actually returned
+
+What Glimmer stores in `usage.json`:
+
+- `last_used_at`
+- `use_count`
+- `use_sources`
+
+Non-goals for this layer:
+
+- no inferred meaning or hidden scoring
+- no append-only event log yet
+- no ranking changes tied directly to usage
+
+Keep usage recording at interface boundaries, not deep inside ranking, search, or recurrence helpers.
+
 ## Code Style
 
 - Shell scripts: keep it simple and portable (bash 4+)
@@ -151,9 +178,11 @@ Automated coverage lives under `tests/` and should cover:
 - `glimmer-log --review-state`
 - `glimmer-ui` index aggregation
 - mattered mark and note merging
+- usage summary merging and private `usage.json` writes
 - review-state aggregation and API output
 - recurrence/resurface/brief builders
 - enriched bubble detail context
+- usage recording across UI, CLI, and MCP boundaries
 
 Run the automated suite with:
 
@@ -182,6 +211,7 @@ When changing parser behavior, check all of these:
 - `log.jsonl` remains plain and backward compatible
 - `events.jsonl` keeps session, exact repo context, and trigger metadata
 - mattered marks remain local-only and do not mutate capture logs
+- usage tracking stays explicit and local in `usage.json`
 - review, recurrence, and brief cues come from shared backend logic, not disconnected frontend-only guesses
 - the latest session manifest gets both `started_at` and `ended_at` plus correct repo context
 - a large or slowly painted bubble is not saved too early
