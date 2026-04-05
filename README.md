@@ -64,7 +64,7 @@ If your system does not have `sha256sum`, use `shasum -a 256 -c SHA256SUMS.txt` 
 <summary><strong>Remote Bootstrap (Higher Risk)</strong></summary>
 
 ```bash
-export GLIMMER_REF=abbedf7faec3d07d024ad30b3aa5577ddb9a3535
+export GLIMMER_REF=<pinned-commit>
 curl -sSL "https://raw.githubusercontent.com/reallyunintented/GlimmerYourBuddy/${GLIMMER_REF}/install.sh" | bash
 ```
 
@@ -75,6 +75,8 @@ The installer puts launchers into `~/.local/bin` and UI assets into `~/.local/sh
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+It also installs `glimmer-mcp` plus a Glimmer-owned Python runtime under `~/.local/share/glimmer/`, using `mcp==1.26.0` by default.
 
 ---
 
@@ -185,7 +187,7 @@ This API is local-only and meant to support the UI first. It is also the foundat
 ### Use as an MCP Server
 Glimmer includes a read-only MCP server so Claude Code agents can query your archive directly.
 
-The `./install.sh` script sets up a Glimmer-owned Python venv and installs the `mcp` package automatically — no manual `pip install` needed.
+The `./install.sh` script provisions a Glimmer-owned Python runtime automatically — no manual `pip install` needed. By default it uses `mcp==1.26.0`, and you can override that with `GLIMMER_MCP_PYPI_SPEC` if you intentionally want a different version. If the host lacks `python3-venv`, Glimmer falls back to a local vendored runtime under `~/.local/share/glimmer/`.
 
 Add Glimmer to Claude Code with:
 

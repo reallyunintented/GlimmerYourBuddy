@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import mcp  # noqa: F401
@@ -70,6 +71,50 @@ def build_fixture(glimmer_dir):
     )
 
 
+def build_many_bubbles_fixture(glimmer_dir, count=60):
+    sessions_dir = glimmer_dir / "sessions"
+    sessions_dir.mkdir(parents=True)
+    events = []
+    for idx in range(count):
+        events.append(
+            {
+                "timestamp": f"2026-04-03T10:{idx % 60:02d}:00+00:00",
+                "companion": "Glimmer",
+                "text": f"Direction signal #{idx}",
+                "source": "auto",
+                "bubble_seq": idx + 1,
+                "session_id": "sess-1",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+                "trigger_type": "post_prompt",
+                "trigger_confidence": "heuristic",
+            }
+        )
+    write_jsonl(glimmer_dir / "events.jsonl", events)
+    write_jsonl(glimmer_dir / "log.jsonl", [])
+    (sessions_dir / "sess-1.json").write_text(
+        json.dumps(
+            {
+                "session_id": "sess-1",
+                "started_at": "2026-04-03T09:59:00+00:00",
+                "ended_at": "2026-04-03T10:59:00+00:00",
+                "companion": "Glimmer",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 @unittest.skipUnless(HAS_MCP, "mcp package not installed")
 class TestModuleLoads(unittest.TestCase):
     @classmethod
@@ -81,6 +126,21 @@ class TestModuleLoads(unittest.TestCase):
 
     def test_module_has_default_glimmer_dir(self):
         self.assertTrue(hasattr(self.module, "DEFAULT_GLIMMER_DIR"))
+
+    def test_resolve_glimmer_ui_path_falls_back_to_local_bin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            script_dir = home / ".local" / "share" / "glimmer"
+            bin_dir = home / ".local" / "bin"
+            script_dir.mkdir(parents=True)
+            bin_dir.mkdir(parents=True)
+            fallback = bin_dir / "glimmer-ui"
+            fallback.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            with patch.object(Path, "home", return_value=home):
+                resolved = self.module._resolve_glimmer_ui_path(script_dir / "glimmer-mcp")
+
+            self.assertEqual(resolved, fallback)
 
 
 @unittest.skipUnless(HAS_MCP, "mcp package not installed")
@@ -170,6 +230,25 @@ class TestSearchBubbles(unittest.TestCase):
             result = self.module._tool_search_bubbles(index, "nonexistent")
             self.assertEqual(result["count"], 0)
 
+    def test_search_rejects_empty_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_fixture(glimmer_dir)
+            index = self.ui.build_index(glimmer_dir)
+            result = self.module._tool_search_bubbles(index, "   ")
+            self.assertEqual(result["error"]["code"], "invalid_query")
+
+    def test_search_truncates_large_result_sets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_many_bubbles_fixture(glimmer_dir, count=60)
+            index = self.ui.build_index(glimmer_dir)
+            result = self.module._tool_search_bubbles(index, "direction")
+            self.assertEqual(result["count"], 60)
+            self.assertEqual(result["returned_count"], self.module.MAX_SEARCH_RESULTS)
+            self.assertTrue(result["truncated"])
+            self.assertEqual(len(result["bubbles"]), self.module.MAX_SEARCH_RESULTS)
+
 
 @unittest.skipUnless(HAS_MCP, "mcp package not installed")
 class TestGetBubble(unittest.TestCase):
@@ -196,7 +275,15 @@ class TestGetBubble(unittest.TestCase):
             build_fixture(glimmer_dir)
             index = self.ui.build_index(glimmer_dir)
             result = self.module._tool_get_bubble(index, "fake-id-does-not-exist")
-            self.assertIsNone(result)
+            self.assertEqual(result["error"]["code"], "invalid_bubble_id")
+
+    def test_get_bubble_valid_but_missing_id_returns_structured_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_fixture(glimmer_dir)
+            index = self.ui.build_index(glimmer_dir)
+            result = self.module._tool_get_bubble(index, "deadbeefdeadbeef")
+            self.assertEqual(result["error"]["code"], "bubble_not_found")
 
 
 @unittest.skipUnless(HAS_MCP, "mcp package not installed")

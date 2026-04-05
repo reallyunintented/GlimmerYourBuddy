@@ -11,6 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SLUG="${GLIMMER_REPO:-reallyunintented/GlimmerYourBuddy}"
 REF="${GLIMMER_REF:-main}"
 BASE_URL="${GLIMMER_BASE_URL:-https://raw.githubusercontent.com/${REPO_SLUG}/${REF}}"
+GLIMMER_MCP_PYPI_SPEC="${GLIMMER_MCP_PYPI_SPEC:-mcp==1.26.0}"
+GLIMMER_GET_PIP_URL="${GLIMMER_GET_PIP_URL:-https://bootstrap.pypa.io/get-pip.py}"
 SCRIPTS=(glimmer-claude glimmer-log glimmer-watcher.py glimmer-session.py glimmer-ui)
 ASSETS=(ui/index.html ui/app.js ui/styles.css)
 REMOTE_WARNING_SHOWN=0
@@ -46,6 +48,24 @@ fetch_script() {
 
     if command -v wget >/dev/null 2>&1; then
         wget -qO- "${BASE_URL}/${script}"
+        return
+    fi
+
+    echo "Error: install requires curl or wget." >&2
+    exit 1
+}
+
+fetch_url_to_file() {
+    local url="$1"
+    local target="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$url" -o "$target"
+        return
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO "$target" "$url"
         return
     fi
 
@@ -93,6 +113,9 @@ install_glimmer_mcp() {
     local share_target="$SHARE_DIR/glimmer-mcp"
     local bin_wrapper="$BIN_DIR/glimmer-mcp"
     local venv_dir="$SHARE_DIR/.venv"
+    local vendor_dir="$SHARE_DIR/vendor"
+    local bootstrap_dir="$SHARE_DIR/.bootstrap"
+    local venv_ready=0
 
     # Install the Python source under SHARE_DIR (not BIN_DIR)
     if [ -f "$SCRIPT_DIR/glimmer-mcp" ]; then
@@ -107,17 +130,68 @@ install_glimmer_mcp() {
     chmod +x "$share_target"
     echo "Installed glimmer-mcp (source)"
 
-    # Create Glimmer-owned venv and install mcp
-    if [ ! -f "$venv_dir/bin/python3" ]; then
-        python3 -m venv "$venv_dir"
+    # Prefer a Glimmer-owned venv, but fall back to a vendored runtime when
+    # python3-venv/ensurepip is unavailable on the host.
+    if [ -x "$venv_dir/bin/python3" ] && "$venv_dir/bin/python3" -m pip --version >/dev/null 2>&1; then
+        venv_ready=1
+    else
+        rm -rf "$venv_dir"
+        if python3 -m venv "$venv_dir" >/dev/null 2>&1; then
+            if [ -x "$venv_dir/bin/python3" ] && "$venv_dir/bin/python3" -m pip --version >/dev/null 2>&1; then
+                venv_ready=1
+            else
+                rm -rf "$venv_dir"
+                echo "python3 -m venv created an incomplete environment; falling back to a vendored MCP runtime." >&2
+            fi
+        else
+            rm -rf "$venv_dir"
+            echo "python3 -m venv unavailable; falling back to a vendored MCP runtime." >&2
+        fi
     fi
-    "$venv_dir/bin/pip" install --quiet mcp
-    echo "Installed mcp into Glimmer venv"
+
+    if [ "$venv_ready" -eq 1 ]; then
+        rm -rf "$vendor_dir"
+        "$venv_dir/bin/python3" -m pip install --quiet "$GLIMMER_MCP_PYPI_SPEC"
+        echo "Installed $GLIMMER_MCP_PYPI_SPEC into Glimmer venv"
+    else
+        if python3 -m pip --version >/dev/null 2>&1; then
+            :
+        else
+            local get_pip
+            get_pip="$(mktemp)"
+            mkdir -p "$bootstrap_dir"
+            echo "Bootstrapping a Glimmer-local pip runtime..." >&2
+            fetch_url_to_file "$GLIMMER_GET_PIP_URL" "$get_pip"
+            if PYTHONUSERBASE="$bootstrap_dir" python3 "$get_pip" --user --break-system-packages >/dev/null 2>&1; then
+                :
+            elif PYTHONUSERBASE="$bootstrap_dir" python3 "$get_pip" --user >/dev/null 2>&1; then
+                :
+            else
+                rm -f "$get_pip"
+                echo "Error: failed to bootstrap a local pip runtime for glimmer-mcp." >&2
+                exit 1
+            fi
+            rm -f "$get_pip"
+        fi
+        rm -rf "$vendor_dir"
+        mkdir -p "$vendor_dir"
+        PYTHONUSERBASE="$bootstrap_dir" python3 -m pip install --quiet --target "$vendor_dir" "$GLIMMER_MCP_PYPI_SPEC"
+        echo "Installed $GLIMMER_MCP_PYPI_SPEC into Glimmer vendor runtime"
+    fi
 
     # Write wrapper into BIN_DIR
     cat > "$bin_wrapper" <<'WRAPPER'
 #!/usr/bin/env bash
-exec "${HOME}/.local/share/glimmer/.venv/bin/python3" "${HOME}/.local/share/glimmer/glimmer-mcp" "$@"
+share_dir="${HOME}/.local/share/glimmer"
+if [ -x "${share_dir}/.venv/bin/python3" ]; then
+    exec "${share_dir}/.venv/bin/python3" "${share_dir}/glimmer-mcp" "$@"
+fi
+if [ -d "${share_dir}/vendor" ]; then
+    export PYTHONPATH="${share_dir}/vendor${PYTHONPATH:+:${PYTHONPATH}}"
+    exec python3 "${share_dir}/glimmer-mcp" "$@"
+fi
+echo "Error: Glimmer MCP runtime is not installed. Re-run ./install.sh." >&2
+exit 1
 WRAPPER
     chmod +x "$bin_wrapper"
     echo "Installed glimmer-mcp (wrapper)"

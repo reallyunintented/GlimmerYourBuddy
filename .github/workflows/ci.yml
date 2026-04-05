@@ -9,6 +9,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      GLIMMER_MCP_PYPI_SPEC: mcp==1.26.0
 
     steps:
       - name: Checkout
@@ -20,7 +22,10 @@ jobs:
           python-version: "3.12"
 
       - name: Shell syntax
-        run: bash -n glimmer-claude glimmer-log install.sh scripts/build-release-checksums.sh
+        run: bash -n glimmer-claude glimmer-log glimmer-mcp install.sh scripts/build-release-checksums.sh
+
+      - name: Install MCP runtime
+        run: python3 -m pip install "${GLIMMER_MCP_PYPI_SPEC}"
 
       - name: Python tests
         run: python3 -m unittest discover -s tests -q

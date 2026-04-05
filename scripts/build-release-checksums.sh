@@ -12,6 +12,7 @@ FILES=(
   install.sh
   glimmer-claude
   glimmer-log
+  glimmer-mcp
   glimmer-session.py
   glimmer-ui
   glimmer-watcher.py

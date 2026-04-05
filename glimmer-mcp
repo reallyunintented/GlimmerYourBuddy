@@ -6,16 +6,35 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
+import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError as exc:  # pragma: no cover - exercised in runtime fallback
+    FastMCP = None
+    MCP_IMPORT_ERROR = exc
+else:
+    MCP_IMPORT_ERROR = None
 
 # ---------------------------------------------------------------------------
 # Load glimmer-ui as a module (same pattern as tests/test_glimmer_ui.py)
 # ---------------------------------------------------------------------------
 
-_MODULE_PATH = Path(__file__).resolve().parent / "glimmer-ui"
+def _resolve_glimmer_ui_path(script_path: Path) -> Path:
+    candidates = [
+        script_path.resolve().parent / "glimmer-ui",
+        Path.home() / ".local" / "bin" / "glimmer-ui",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+_MODULE_PATH = _resolve_glimmer_ui_path(Path(__file__))
 _loader = SourceFileLoader("glimmer_ui", str(_MODULE_PATH))
 _spec = importlib.util.spec_from_loader("glimmer_ui", _loader)
 _ui = importlib.util.module_from_spec(_spec)
@@ -26,10 +45,55 @@ _loader.exec_module(_ui)
 # ---------------------------------------------------------------------------
 
 DEFAULT_GLIMMER_DIR = Path(os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer"))
+DEFAULT_BRIEF_LIMIT = 3
+MAX_BRIEF_LIMIT = 10
+MAX_QUERY_CHARS = 500
+MAX_SEARCH_RESULTS = 50
+BUBBLE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _build_index() -> dict:
     return _ui.build_index(DEFAULT_GLIMMER_DIR)
+
+
+def _json_error(code: str, message: str, **details) -> dict:
+    payload = {
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    }
+    if details:
+        payload["error"]["details"] = details
+    return payload
+
+
+def _normalize_limit(limit) -> int:
+    try:
+        parsed = int(limit)
+    except (TypeError, ValueError):
+        return DEFAULT_BRIEF_LIMIT
+    return max(1, min(parsed, MAX_BRIEF_LIMIT))
+
+
+def _normalize_query(query) -> str | None:
+    if query is None:
+        return None
+    text = str(query).strip()
+    if not text:
+        return None
+    if len(text) > MAX_QUERY_CHARS:
+        return None
+    return text
+
+
+def _normalize_bubble_id(bubble_id) -> str | None:
+    if bubble_id is None:
+        return None
+    text = str(bubble_id).strip()
+    if not text or not BUBBLE_ID_RE.fullmatch(text):
+        return None
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +102,7 @@ def _build_index() -> dict:
 
 
 def _tool_get_brief(index, project=None, session_id=None, cwd=None, limit=3):
-    limit = max(1, min(limit, 10))
+    limit = _normalize_limit(limit)
     return _ui.build_brief_view(
         index, project=project, session_id=session_id, cwd=cwd, limit=limit
     )
@@ -53,26 +117,44 @@ def _tool_get_review(index):
 
 
 def _tool_search_bubbles(index, query, mattered_only=False):
-    return _ui.build_search_view(index, query, mattered_only=mattered_only)
+    normalized_query = _normalize_query(query)
+    if normalized_query is None:
+        return _json_error(
+            "invalid_query",
+            f"query must be a non-empty string up to {MAX_QUERY_CHARS} characters",
+        )
+    result = _ui.build_search_view(index, normalized_query, mattered_only=mattered_only)
+    total = result.get("count", 0)
+    bubbles = list(result.get("bubbles") or [])
+    limited = bubbles[:MAX_SEARCH_RESULTS]
+    result["bubbles"] = limited
+    result["returned_count"] = len(limited)
+    result["truncated"] = total > len(limited)
+    return result
 
 
 def _tool_get_bubble(index, bubble_id):
-    return _ui.build_bubble_view(index, bubble_id)
+    normalized_bubble_id = _normalize_bubble_id(bubble_id)
+    if normalized_bubble_id is None:
+        return _json_error(
+            "invalid_bubble_id",
+            "bubble_id must be a 16-character lowercase hex Glimmer bubble id",
+        )
+    result = _ui.build_bubble_view(index, normalized_bubble_id)
+    if result is None:
+        return _json_error("bubble_not_found", "Bubble not found", bubble_id=normalized_bubble_id)
+    return result
 
 
 # ---------------------------------------------------------------------------
 # MCP server & tool definitions
 # ---------------------------------------------------------------------------
 
-mcp_server = FastMCP("glimmer")
-
-
-@mcp_server.tool()
 def get_brief(
     project: str | None = None,
     session_id: str | None = None,
     cwd: str | None = None,
-    limit: int = 3,
+    limit: int = DEFAULT_BRIEF_LIMIT,
 ) -> str:
     """Get a project brief: top mattered bubbles, open items, and recurring signals."""
     index = _build_index()
@@ -83,21 +165,18 @@ def get_brief(
     )
 
 
-@mcp_server.tool()
 def list_mattered() -> str:
     """List all mattered bubbles sorted by recency."""
     index = _build_index()
     return json.dumps(_tool_list_mattered(index), ensure_ascii=False, indent=2)
 
 
-@mcp_server.tool()
 def get_review() -> str:
     """Get mattered bubbles grouped by review state."""
     index = _build_index()
     return json.dumps(_tool_get_review(index), ensure_ascii=False, indent=2)
 
 
-@mcp_server.tool()
 def search_bubbles(query: str, mattered_only: bool = False) -> str:
     """Search bubbles by text content. Optionally restrict to mattered-only."""
     index = _build_index()
@@ -108,14 +187,21 @@ def search_bubbles(query: str, mattered_only: bool = False) -> str:
     )
 
 
-@mcp_server.tool()
 def get_bubble(bubble_id: str) -> str:
     """Get a single bubble by ID, including session and project context."""
     index = _build_index()
-    result = _tool_get_bubble(index, bubble_id)
-    if result is None:
-        return json.dumps({"error": "Bubble not found"})
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps(_tool_get_bubble(index, bubble_id), ensure_ascii=False, indent=2)
+
+
+if FastMCP is not None:
+    mcp_server = FastMCP("glimmer")
+    mcp_server.tool()(get_brief)
+    mcp_server.tool()(list_mattered)
+    mcp_server.tool()(get_review)
+    mcp_server.tool()(search_bubbles)
+    mcp_server.tool()(get_bubble)
+else:  # pragma: no cover - exercised through runtime fallback
+    mcp_server = None
 
 
 # ---------------------------------------------------------------------------
@@ -123,4 +209,11 @@ def get_bubble(bubble_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    if mcp_server is None:
+        print(
+            "Error: missing MCP runtime dependency. "
+            "Run ./install.sh or install GLIMMER_MCP_PYPI_SPEC (default: mcp==1.26.0).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     mcp_server.run(transport="stdio")
