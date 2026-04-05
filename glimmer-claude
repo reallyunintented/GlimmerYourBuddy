@@ -4,7 +4,7 @@
 #
 # Wraps `claude` inside `script` to capture terminal output, then runs
 # a background watcher that extracts speech bubbles and logs them to
-# ~/.claude/glimmer/log.jsonl
+# $GLIMMER_DATA_DIR/log.jsonl (default: ~/.claude/glimmer/log.jsonl)
 #
 # Usage: glimmer-claude [any claude args...]
 #        glimmer-claude --glimmer-brief [any claude args...]
@@ -13,7 +13,7 @@
 set -euo pipefail
 umask 077
 
-GLIMMER_DIR="$HOME/.claude/glimmer"
+GLIMMER_DIR="${GLIMMER_DATA_DIR:-$HOME/.claude/glimmer}"
 RAW_DIR="$GLIMMER_DIR/raw"
 SESSIONS_DIR="$GLIMMER_DIR/sessions"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,6 +54,7 @@ fi
 
 BRIEF_ON_START="${GLIMMER_BRIEF_ON_START:-0}"
 BRIEF_FORMAT="${GLIMMER_BRIEF_FORMAT:-plain}"
+GLIMMER_SESSION_PROFILE="${GLIMMER_PROFILE:-}"
 CLAUDE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,6 +66,10 @@ while [ $# -gt 0 ]; do
             BRIEF_ON_START=1
             BRIEF_FORMAT="markdown"
             shift
+            ;;
+        --profile)
+            GLIMMER_SESSION_PROFILE="$2"
+            shift 2
             ;;
         --)
             shift
@@ -121,6 +126,19 @@ MANIFEST_PATH="$SESSIONS_DIR/${SESSION_ID}.json"
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
 PWD_VALUE="${PWD:-$(pwd)}"
 WATCHER_PID=""
+
+if [ -z "$GLIMMER_SESSION_PROFILE" ]; then
+    _pdir="${PWD:-$(pwd)}"
+    while [ "$_pdir" != "/" ]; do
+        if [ -f "$_pdir/.glimmer-profile" ]; then
+            GLIMMER_SESSION_PROFILE="$(head -1 "$_pdir/.glimmer-profile" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            break
+        fi
+        _pdir="$(dirname "$_pdir")"
+    done
+    unset _pdir
+fi
+export GLIMMER_SESSION_PROFILE
 
 write_session_manifest() {
     python3 "$SESSION_HELPER" manifest "$MANIFEST_PATH" "$SESSION_ID" "$STARTED_AT" "$COMPANION_NAME" "$TYPESCRIPT" "$PWD_VALUE" "${CLAUDE_ARGS[@]}"

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import stat
 import subprocess
 import tempfile
@@ -189,6 +190,29 @@ class DetectRepoContextTests(unittest.TestCase):
             )
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertIsNone(data["session_profile"])
+
+    def test_profile_env_var_flows_into_manifest(self):
+        """GLIMMER_SESSION_PROFILE env var reaches write_manifest via CLI."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = str(Path(tmp) / "s.json")
+            env = {**os.environ, "GLIMMER_SESSION_PROFILE": "ambient"}
+            subprocess.run(
+                [
+                    "python3",
+                    str(REPO_ROOT / "glimmer-session.py"),
+                    "manifest",
+                    manifest_path,
+                    "s-1",
+                    "2026-04-05T00:00:00+00:00",
+                    "Glimmer",
+                    "/tmp/raw",
+                    tmp,
+                ],
+                env=env,
+                check=True,
+            )
+            data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            self.assertEqual(data["session_profile"], "ambient")
 
 
 if __name__ == "__main__":
