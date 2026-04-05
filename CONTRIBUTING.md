@@ -30,7 +30,7 @@ The runtime is split on purpose:
 - `glimmer-log`
   Reads `log.jsonl` for the all-time plain view, reads `events.jsonl` plus `sessions/` for grouped session output, can mark/review mattered bubbles from the terminal, can export a project brief in plain text, markdown, or JSON, and records explicit usage for the commands that surface or change mattered state.
 - `glimmer-ui`
-  Runs the local archive app over localhost, merges mattered marks plus usage summaries, builds recurrence/resurface/brief hints, and serves the frontend plus JSON API from `ui/`.
+  Runs the local archive app over localhost, merges mattered marks plus usage summaries, derives staleness, builds recurrence/resurface/brief hints, and serves the frontend plus JSON API from `ui/`.
 
 Important storage paths:
 
@@ -72,6 +72,7 @@ Why the split exists:
 - `events.jsonl` can evolve to hold session ids, exact repo context, trigger metadata, and future sidecar fields.
 - `mattered.json` is user-authored signal and should stay separate from passive capture data.
 - `usage.json` is explicit local activity and should stay separate from both passive capture data and mattered annotations.
+- staleness is derived at read time from mattered metadata plus `usage.json`; do not add a separate persisted staleness file.
 - review, recurrence, and brief logic should stay shared in backend builders, not duplicated across every client.
 - watcher debug output belongs in `watcher.log`, not on the shared fullscreen Claude terminal.
 
@@ -146,6 +147,7 @@ Non-goals for this layer:
 - no inferred meaning or hidden scoring
 - no append-only event log yet
 - no ranking changes tied directly to usage
+- no separate staleness store; derive from explicit facts instead
 
 Keep usage recording at interface boundaries, not deep inside ranking, search, or recurrence helpers.
 

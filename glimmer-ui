@@ -44,6 +44,13 @@ BRIEF_REVIEW_PRIORITY = {
     "used": 1,
     "stale": 0,
 }
+STALENESS_BUCKETS = ("active", "fading", "stale")
+ACTIVE_USE_DAYS = 7
+FADING_UNUSED_DAYS = 7
+STALE_NEVER_USED_DAYS = 21
+STALE_OPEN_UNUSED_DAYS = 14
+STALE_USED_UNUSED_DAYS = 30
+HIGH_USE_COUNT = 3
 RECURRENCE_STOP_WORDS = {
     "about",
     "after",
@@ -307,6 +314,24 @@ def truncate_text(value: str | None, limit: int = 100) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def current_datetime(now: str | datetime | None = None) -> datetime:
+    if isinstance(now, datetime):
+        return now
+    if isinstance(now, str):
+        parsed = parse_timestamp(now)
+        if parsed is not None:
+            return parsed
+    return datetime.now()
+
+
+def days_since(value: str | None, *, now: str | datetime | None = None) -> int | None:
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return None
+    current = current_datetime(now)
+    return max(0, (current.date() - parsed.date()).days)
+
+
 def load_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
@@ -469,6 +494,78 @@ def apply_usage(bubbles: list[dict], usage: dict[str, dict]) -> None:
         bubble["use_sources"] = list(record.get("use_sources") or [])
 
 
+def staleness_priority_value(bucket: str | None) -> int:
+    return {
+        "active": 0,
+        "fading": 1,
+        "stale": 2,
+    }.get(bucket, -1)
+
+
+def derive_staleness(bubble: dict) -> tuple[str | None, str | None]:
+    if not bubble.get("mattered"):
+        return (None, None)
+
+    review_state = bubble.get("review_state") or DEFAULT_REVIEW_STATE
+    use_count = int(bubble.get("use_count") or 0)
+    days_used = bubble.get("days_since_used")
+    days_mattered = bubble.get("days_since_mattered")
+
+    if days_used is not None and days_used <= ACTIVE_USE_DAYS:
+        return ("active", f"Revisited {days_used} day{'s' if days_used != 1 else ''} ago.")
+
+    if use_count >= HIGH_USE_COUNT:
+        if days_used is None or days_used <= STALE_USED_UNUSED_DAYS:
+            return ("active", f"Revisited {use_count} times, so it is still showing life.")
+        return ("fading", f"Revisited {use_count} times before, but not recently.")
+
+    if review_state == "open":
+        open_days = days_used if days_used is not None else days_mattered
+        if open_days is not None and open_days >= STALE_OPEN_UNUSED_DAYS:
+            return ("stale", f"Still open, but untouched for {open_days} days.")
+        if open_days is not None and open_days >= FADING_UNUSED_DAYS:
+            return (
+                "fading",
+                f"Still open, but cooling off after {open_days} days without a revisit.",
+            )
+        return ("active", "Still open in the review loop.")
+
+    if use_count == 0:
+        if days_mattered is not None and days_mattered >= STALE_NEVER_USED_DAYS:
+            return (
+                "stale",
+                f"Marked mattered {days_mattered} days ago, but never revisited.",
+            )
+        if days_mattered is not None and days_mattered >= FADING_UNUSED_DAYS:
+            return (
+                "fading",
+                f"Marked mattered {days_mattered} days ago, but not revisited yet.",
+            )
+        return ("active", "Freshly marked and still within the active window.")
+
+    if days_used is not None and days_used >= STALE_USED_UNUSED_DAYS:
+        return ("stale", f"Used before, but not revisited for {days_used} days.")
+    if days_used is not None and days_used >= FADING_UNUSED_DAYS:
+        return (
+            "fading",
+            f"Used before, but revisit activity has cooled off for {days_used} days.",
+        )
+    return ("active", "Still active from recent revisit activity.")
+
+
+def apply_staleness(bubbles: list[dict], *, now: str | datetime | None = None) -> None:
+    for bubble in bubbles:
+        bubble["days_since_used"] = days_since(bubble.get("last_used_at"), now=now)
+        bubble["days_since_mattered"] = (
+            days_since(bubble.get("mattered_at"), now=now)
+            if bubble.get("mattered")
+            else None
+        )
+        staleness_bucket, staleness_reason = derive_staleness(bubble)
+        bubble["staleness_bucket"] = staleness_bucket
+        bubble["staleness_reason"] = staleness_reason
+
+
 def record_usage(
     usage: dict[str, dict],
     bubble_ids: list[str],
@@ -571,6 +668,10 @@ def normalize_bubble(entry: dict, source: str) -> dict:
     normalized["matter_updated_at"] = None
     normalized["review_state"] = None
     normalized["reviewed_at"] = None
+    normalized["days_since_used"] = None
+    normalized["days_since_mattered"] = None
+    normalized["staleness_bucket"] = None
+    normalized["staleness_reason"] = None
     return normalized
 
 
@@ -775,6 +876,9 @@ def brief_bubble_ids(brief: dict) -> list[str]:
         bubble = entry.get("bubble") or {}
         if bubble.get("id"):
             bubble_ids.append(bubble["id"])
+    for bubble in brief.get("resurface_now") or []:
+        if bubble.get("id"):
+            bubble_ids.append(bubble["id"])
     return bubble_ids
 
 
@@ -817,6 +921,21 @@ def build_resurface_hints(index: dict) -> list[dict]:
         ),
         reverse=True,
     )
+    cooling_off = sorted(
+        [
+            bubble
+            for bubble in mattered
+            if bubble.get("staleness_bucket") in {"fading", "stale"}
+        ],
+        key=lambda bubble: (
+            staleness_priority_value(bubble.get("staleness_bucket")),
+            bubble.get("days_since_used")
+            if bubble.get("days_since_used") is not None
+            else bubble.get("days_since_mattered") or -1,
+            review_sort_key(bubble),
+        ),
+        reverse=True,
+    )
 
     hints = []
     if unreviewed_with_notes:
@@ -848,6 +967,16 @@ def build_resurface_hints(index: dict) -> list[dict]:
                     f'{"s" if len(recurring[0]["matches"]) != 1 else ""}.'
                 ),
                 "bubble": recurring[0]["bubble"],
+            }
+        )
+    if cooling_off:
+        hints.append(
+            {
+                "key": "cooling_off",
+                "label": "Needs return",
+                "copy": cooling_off[0].get("staleness_reason")
+                or "Worth pulling back into attention.",
+                "bubble": cooling_off[0],
             }
         )
     return hints
@@ -886,6 +1015,10 @@ def build_review_view(index: dict) -> dict:
         "counts": {
             "mattered": len(mattered),
             **{review_state: len(groups[review_state]) for review_state in REVIEW_STATES},
+        },
+        "staleness_counts": {
+            bucket: sum(1 for bubble in mattered if bubble.get("staleness_bucket") == bucket)
+            for bucket in STALENESS_BUCKETS
         },
         "groups": groups,
         "hints": build_resurface_hints(index),
@@ -1010,6 +1143,7 @@ def resolve_brief_scope(
 
 def brief_priority_key(index: dict, bubble: dict) -> tuple:
     return (
+        staleness_priority_value(bubble.get("staleness_bucket")),
         1 if str(bubble.get("matter_note") or "").strip() else 0,
         BRIEF_REVIEW_PRIORITY.get(
             bubble.get("review_state") or DEFAULT_REVIEW_STATE,
@@ -1023,6 +1157,19 @@ def brief_priority_key(index: dict, bubble: dict) -> tuple:
         ),
         timestamp_sort_key(bubble.get("timestamp")),
         bubble.get("id", ""),
+    )
+
+
+def staleness_priority_key(index: dict, bubble: dict) -> tuple:
+    age = bubble.get("days_since_used")
+    if age is None:
+        age = bubble.get("days_since_mattered") or -1
+    return (
+        staleness_priority_value(bubble.get("staleness_bucket")),
+        1 if (bubble.get("review_state") or DEFAULT_REVIEW_STATE) == "open" else 0,
+        age,
+        -int(bubble.get("use_count") or 0),
+        brief_priority_key(index, bubble),
     )
 
 
@@ -1079,6 +1226,15 @@ def build_brief_view(
         ),
         reverse=True,
     )
+    resurface_now = sorted(
+        [
+            bubble
+            for bubble in mattered
+            if bubble.get("staleness_bucket") in {"fading", "stale"}
+        ],
+        key=lambda bubble: staleness_priority_key(index, bubble),
+        reverse=True,
+    )
 
     project_record = scope["project"] or {}
     counts = {review_state: 0 for review_state in REVIEW_STATES}
@@ -1102,12 +1258,22 @@ def build_brief_view(
             "unreviewed_count": counts[DEFAULT_REVIEW_STATE],
             "used_count": counts["used"],
             "stale_count": counts["stale"],
+            "active_signal_count": sum(
+                1 for bubble in mattered if bubble.get("staleness_bucket") == "active"
+            ),
+            "fading_signal_count": sum(
+                1 for bubble in mattered if bubble.get("staleness_bucket") == "fading"
+            ),
+            "stale_signal_count": sum(
+                1 for bubble in mattered if bubble.get("staleness_bucket") == "stale"
+            ),
             "last_seen_at": project_record.get("last_seen_at"),
         },
         "project": project_record or None,
         "top_mattered": mattered[:limit],
         "open_items": active_items[:limit],
         "recurring_signals": recurring[:limit],
+        "resurface_now": resurface_now[:limit],
     }
 
 
@@ -1216,6 +1382,8 @@ def build_sessions(
     manifests: dict[str, dict],
     matters: dict[str, dict],
     usage: dict[str, dict],
+    *,
+    now: str | datetime | None = None,
 ) -> list[dict]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for entry in events:
@@ -1230,6 +1398,7 @@ def build_sessions(
         bubbles = sorted(grouped.get(session_id, []), key=bubble_sort_session)
         apply_matters(bubbles, matters)
         apply_usage(bubbles, usage)
+        apply_staleness(bubbles, now=now)
         latest = bubbles[-1] if bubbles else None
         started_at = session_field(manifest, bubbles, "started_at") or (
             bubbles[0].get("timestamp") if bubbles else None
@@ -1324,7 +1493,7 @@ def build_projects(sessions: list[dict]) -> list[dict]:
     return projects
 
 
-def build_index(glimmer_dir: Path) -> dict:
+def build_index(glimmer_dir: Path, *, now: str | datetime | None = None) -> dict:
     log_entries = load_jsonl(glimmer_dir / "log.jsonl")
     event_entries = load_jsonl(glimmer_dir / "events.jsonl")
     manifests = load_manifests(glimmer_dir / "sessions")
@@ -1334,7 +1503,8 @@ def build_index(glimmer_dir: Path) -> dict:
     bubbles = dedupe_bubbles(event_entries, log_entries)
     apply_matters(bubbles, matters)
     apply_usage(bubbles, usage)
-    sessions = build_sessions(event_entries, manifests, matters, usage)
+    apply_staleness(bubbles, now=now)
+    sessions = build_sessions(event_entries, manifests, matters, usage, now=now)
     projects = build_projects(sessions)
 
     return {
@@ -1603,18 +1773,18 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
                     note=note,
                 ),
             )
+            record_usage_for_index(
+                self.config["glimmer_dir"],
+                index,
+                [bubble_id],
+                "ui.matter_toggle",
+            )
             self.send_json(
                 {
                     "ok": True,
                     "bubble_id": bubble_id,
                     "matter": matter,
                 }
-            )
-            record_usage_for_index(
-                self.config["glimmer_dir"],
-                index,
-                [bubble_id],
-                "ui.matter_toggle",
             )
             return
 
@@ -1634,18 +1804,18 @@ class GlimmerUIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_error(400, str(exc))
             return
+        record_usage_for_index(
+            self.config["glimmer_dir"],
+            index,
+            [bubble_id],
+            "ui.review_state",
+        )
         self.send_json(
             {
                 "ok": True,
                 "bubble_id": bubble_id,
                 "matter": matter,
             }
-        )
-        record_usage_for_index(
-            self.config["glimmer_dir"],
-            index,
-            [bubble_id],
-            "ui.review_state",
         )
 
 

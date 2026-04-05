@@ -61,6 +61,18 @@ const REVIEW_SORT_META = {
   oldest_open: "Oldest open",
 };
 
+const STALENESS_META = {
+  active: {
+    label: "Active",
+  },
+  fading: {
+    label: "Fading",
+  },
+  stale: {
+    label: "Needs return",
+  },
+};
+
 const formatDateTime = (value) => {
   if (!value) return "Unknown";
   const date = new Date(value);
@@ -134,8 +146,16 @@ const briefBubbleIds = () => {
       ...(state.briefData.top_mattered ?? []).map((bubble) => bubble.id),
       ...(state.briefData.open_items ?? []).map((bubble) => bubble.id),
       ...(state.briefData.recurring_signals ?? []).map((entry) => entry.bubble.id),
+      ...(state.briefData.resurface_now ?? []).map((bubble) => bubble.id),
     ])
   );
+};
+
+const usageLabel = (bubble) => {
+  if (bubble.days_since_used == null) return "Not revisited yet";
+  if (bubble.days_since_used === 0) return "Used today";
+  if (bubble.days_since_used === 1) return "Used 1 day ago";
+  return `Used ${bubble.days_since_used} days ago`;
 };
 
 const ensureReviewVisibilityForBubble = (bubbleId) => {
@@ -218,6 +238,11 @@ const bubbleChips = (bubble) => {
   if (bubble.mattered) chips.push(`<span class="chip chip-accent">Mattered</span>`);
   if (bubble.mattered && bubble.review_state) {
     chips.push(`<span class="chip">${escapeHtml(REVIEW_META[bubble.review_state]?.label || bubble.review_state)}</span>`);
+  }
+  if (bubble.mattered && bubble.staleness_bucket) {
+    chips.push(
+      `<span class="chip">${escapeHtml(STALENESS_META[bubble.staleness_bucket]?.label || bubble.staleness_bucket)}</span>`
+    );
   }
   if (bubble.project_name) chips.push(`<span class="chip">${escapeHtml(bubble.project_name)}</span>`);
   if (bubble.git_branch) chips.push(`<span class="chip">${escapeHtml(bubble.git_branch)}</span>`);
@@ -527,6 +552,8 @@ const renderReview = () => {
   }
 
   const hints = state.reviewData?.hints ?? [];
+  const stalenessCounts = state.reviewData?.staleness_counts ?? {};
+  const needsReturnCount = (stalenessCounts.fading ?? 0) + (stalenessCounts.stale ?? 0);
 
   elements.mainContent.innerHTML = "";
   const stack = document.createElement("div");
@@ -555,6 +582,14 @@ const renderReview = () => {
           `
         )
         .join("")}
+      <button
+        class="review-summary-card"
+        data-review-filter="all"
+      >
+        <div class="card-meta">Needs return</div>
+        <strong>${needsReturnCount}</strong>
+        <p>Fading or stale signals that should come back into view.</p>
+      </button>
     </section>
     <section class="review-controls">
       <div class="review-filter-row">
@@ -653,6 +688,7 @@ const renderBrief = () => {
   const topMattered = brief.top_mattered ?? [];
   const openItems = brief.open_items ?? [];
   const recurring = brief.recurring_signals ?? [];
+  const resurfaceNow = brief.resurface_now ?? [];
   const recurringCount = recurring.length;
 
   elements.mainContent.innerHTML = `
@@ -701,6 +737,11 @@ const renderBrief = () => {
         <p>Freshly marked bubbles you have not revisited yet.</p>
       </div>
       <div class="review-summary-card">
+        <div class="card-meta">Needs return</div>
+        <strong>${(summary.fading_signal_count ?? 0) + (summary.stale_signal_count ?? 0)}</strong>
+        <p>Signals that are fading or have gone stale.</p>
+      </div>
+      <div class="review-summary-card">
         <div class="card-meta">Recurring</div>
         <strong>${recurringCount}</strong>
         <p>Repeated themes Glimmer can already surface here.</p>
@@ -730,6 +771,20 @@ const renderBrief = () => {
         <span class="muted">${openItems.length}</span>
       </div>
       ${openItems.length ? `<div class="card-list">${openItems.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>` : '<div class="review-empty">Nothing open right now.</div>'}
+    </section>
+    <section>
+      <div class="section-header">
+        <div>
+          <h3 class="section-title">Needs Return</h3>
+          <p class="section-copy">Signals that are fading or stale enough to pull back into working memory now.</p>
+        </div>
+        <span class="muted">${resurfaceNow.length}</span>
+      </div>
+      ${
+        resurfaceNow.length
+          ? `<div class="card-list">${resurfaceNow.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>`
+          : '<div class="review-empty">Nothing is fading right now.</div>'
+      }
     </section>
     <section>
       <div class="section-header">
@@ -849,6 +904,11 @@ const renderDetail = () => {
                       ${escapeHtml(REVIEW_META[reviewState]?.description || "")}
                       ${bubble.reviewed_at ? ` · updated ${escapeHtml(formatDateTime(bubble.reviewed_at))}` : ""}
                     </p>
+                    ${
+                      bubble.staleness_bucket
+                        ? `<p class="matter-meta">${escapeHtml(STALENESS_META[bubble.staleness_bucket]?.label || bubble.staleness_bucket)} · ${escapeHtml(bubble.staleness_reason || usageLabel(bubble))}</p>`
+                        : ""
+                    }
                   </section>
                 `
                 : ""
@@ -864,8 +924,12 @@ const renderDetail = () => {
             <div class="meta-item"><dt>CWD</dt><dd>${escapeHtml(bubble.cwd || "No cwd")}</dd></div>
             <div class="meta-item"><dt>Trigger</dt><dd>${escapeHtml(bubble.trigger_type || "Unknown")}</dd></div>
             <div class="meta-item"><dt>Source</dt><dd>${escapeHtml(bubble.source || "legacy")}</dd></div>
+            <div class="meta-item"><dt>Last used</dt><dd>${escapeHtml(bubble.last_used_at ? formatDateTime(bubble.last_used_at) : "Never")}</dd></div>
+            <div class="meta-item"><dt>Use count</dt><dd>${escapeHtml(String(bubble.use_count ?? 0))}</dd></div>
             <div class="meta-item"><dt>Mattered</dt><dd>${bubble.mattered ? "Yes" : "No"}</dd></div>
             ${bubble.mattered ? `<div class="meta-item"><dt>Review state</dt><dd>${escapeHtml(REVIEW_META[reviewState]?.label || reviewState)}</dd></div>` : ""}
+            ${bubble.mattered && bubble.staleness_bucket ? `<div class="meta-item"><dt>Staleness</dt><dd>${escapeHtml(STALENESS_META[bubble.staleness_bucket]?.label || bubble.staleness_bucket)}</dd></div>` : ""}
+            ${bubble.mattered && bubble.staleness_reason ? `<div class="meta-item"><dt>Reason</dt><dd>${escapeHtml(bubble.staleness_reason)}</dd></div>` : ""}
           </dl>
         </section>
         ${
@@ -993,6 +1057,9 @@ const buildBriefCopyText = (mode = "plain") => {
   const lineForBubble = (bubble) => {
     const reviewState = bubble.review_state || "unreviewed";
     const parts = [`[${reviewState}] ${bubble.text}`];
+    if (bubble.staleness_bucket) {
+      parts.push(`staleness: ${bubble.staleness_bucket}`);
+    }
     if (bubble.matter_note) parts.push(`note: ${bubble.matter_note}`);
     parts.push(`id: ${bubble.id}`);
     return parts.join(" | ");
@@ -1022,6 +1089,13 @@ const buildBriefCopyText = (mode = "plain") => {
               `- ${lineForBubble(entry.bubble)} | matches: ${entry.match_count} | shared: ${(entry.shared_tokens || []).join(", ") || "shared themes"}`
           )
         : ["- No recurring signals yet."]),
+      "",
+      "## Needs Return",
+      ...(brief.resurface_now?.length
+        ? brief.resurface_now.map(
+            (bubble) => `- ${lineForBubble(bubble)} | ${bubble.staleness_reason || "Worth bringing back."}`
+          )
+        : ["- Nothing is fading right now."]),
     ].join("\n");
   }
 
@@ -1047,6 +1121,13 @@ const buildBriefCopyText = (mode = "plain") => {
             `  - ${lineForBubble(entry.bubble)} | matches=${entry.match_count} | shared=${(entry.shared_tokens || []).join(", ") || "shared themes"}`
         )
       : ["  none yet"]),
+    "",
+    "Needs return",
+    ...(brief.resurface_now?.length
+      ? brief.resurface_now.map(
+          (bubble) => `  - ${lineForBubble(bubble)} | ${bubble.staleness_reason || "Worth bringing back."}`
+        )
+      : ["  nothing fading right now"]),
   ].join("\n");
 };
 

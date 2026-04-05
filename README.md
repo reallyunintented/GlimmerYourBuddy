@@ -22,6 +22,7 @@ When you use Claude Code with Glimmer enabled, it:
 - **Lets you mark** a bubble as mattered, attach a short note, and move it through a review state
 - **Surfaces recurrence cues** so related mattered bubbles and repeated themes can come back later
 - **Tracks explicit local revisits** with `last_used_at`, `use_count`, and `use_sources`
+- **Derives honest staleness** so Glimmer can show what is still active, what is fading, and what needs to come back now
 - **Exposes local interfaces** for people and tools through the UI, `glimmer-log`, and a small localhost JSON API
 
 It is a local-first significance layer for things your Claude buddy said that actually changed the work.
@@ -147,7 +148,7 @@ glimmer-log --json
 glimmer-ui
 ```
 
-That opens a small local app for browsing recent bubbles, mattered bubbles, the review queue, projects, sessions, and search. You can mark a bubble as mattered, add a note, change its review state, and inspect related mattered bubbles plus recurrence hints. It reads and writes only your local Glimmer files and does not upload anything.
+That opens a small local app for browsing recent bubbles, mattered bubbles, the review queue, projects, sessions, and search. You can mark a bubble as mattered, add a note, change its review state, inspect related mattered bubbles plus recurrence hints, and see derived staleness based on age and explicit revisit activity. It reads and writes only your local Glimmer files and does not upload anything.
 
 The UI also has a `Brief` view: a compact "before you begin" panel that pulls the top mattered bubbles, open items, and recurring signals for a project, with copy buttons for plain text or markdown agent context.
 
@@ -232,7 +233,7 @@ glimmer-ui
 glimmer-claude --glimmer-brief
 ```
 
-The brief pulls from the same local mattered/review/recurrence data as the UI and API. It is meant to answer one question quickly: what should I remember before I continue here?
+The brief pulls from the same local mattered/review/recurrence/staleness data as the UI and API. It is meant to answer one question quickly: what should I remember before I continue here, and what is fading enough to bring back now?
 
 ### Explicit Local Usage Tracking
 Glimmer now keeps a local `usage.json` summary alongside the archive. This is intentionally narrow and explicit:
@@ -248,6 +249,8 @@ Glimmer stores only durable local facts:
 - `use_sources`
 
 This is not an inferred importance score. Glimmer does not try to guess meaning from vague behavior yet.
+
+Staleness is derived from those explicit facts only. There is no separate staleness store and no AI interpretation layer behind it.
 
 ### Watcher Debug Output
 By default, Glimmer keeps the watcher quiet so it does not scribble across Claude's fullscreen UI.
@@ -386,6 +389,7 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Human signal** — Mark bubbles as mattered, attach notes, and move them through review states  
 ✅ **Recurrence cues** — Related mattered bubbles and repeated themes can resurface later  
 ✅ **Usage tracking** — Explicit local revisit counts and sources across UI, CLI, and MCP  
+✅ **Derived staleness** — Active, fading, and needs-return signals from age plus revisit history  
 ✅ **Local machine interface** — `glimmer-log` mattered/review commands plus localhost JSON routes  
 ✅ **Lightweight** — Small local toolchain, minimal dependencies  
 ✅ **Privacy-first** — Everything stays on your machine  

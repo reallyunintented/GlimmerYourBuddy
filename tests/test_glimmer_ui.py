@@ -219,6 +219,166 @@ def build_recurrence_fixture(module, glimmer_dir: Path) -> dict[str, str]:
     return ids
 
 
+def build_staleness_fixture(module, glimmer_dir: Path) -> dict[str, str]:
+    sessions_dir = glimmer_dir / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    events = [
+        {
+            "timestamp": "2026-03-20T10:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "Active open thread.",
+            "source": "auto",
+            "bubble_seq": 1,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+        {
+            "timestamp": "2026-03-01T10:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "Never revisited mattered note.",
+            "source": "auto",
+            "bubble_seq": 2,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+        {
+            "timestamp": "2026-03-02T10:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "Used once and now cooling off.",
+            "source": "auto",
+            "bubble_seq": 3,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+        {
+            "timestamp": "2026-02-28T10:00:00+00:00",
+            "companion": "Glimmer",
+            "text": "Frequently resurfaced signal.",
+            "source": "auto",
+            "bubble_seq": 4,
+            "session_id": "sess-1",
+            "cwd": "/work/alpha",
+            "project_root": "/work/alpha",
+            "project_name": "alpha",
+            "git_branch": "main",
+            "is_repo_root": True,
+            "trigger_type": "unknown",
+            "trigger_confidence": "none",
+        },
+    ]
+    write_jsonl(glimmer_dir / "events.jsonl", events)
+    write_jsonl(glimmer_dir / "log.jsonl", [])
+    (sessions_dir / "sess-1.json").write_text(
+        json.dumps(
+            {
+                "session_id": "sess-1",
+                "started_at": "2026-02-28T09:59:00+00:00",
+                "ended_at": "2026-03-20T10:05:00+00:00",
+                "companion": "Glimmer",
+                "cwd": "/work/alpha",
+                "project_root": "/work/alpha",
+                "project_name": "alpha",
+                "git_branch": "main",
+                "is_repo_root": True,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    ids = {
+        "active_open": module.bubble_id(events[0]),
+        "never_used": module.bubble_id(events[1]),
+        "fading_used": module.bubble_id(events[2]),
+        "high_use": module.bubble_id(events[3]),
+    }
+    (glimmer_dir / "mattered.json").write_text(
+        json.dumps(
+            {
+                ids["active_open"]: {
+                    "note": "Still in flight.",
+                    "marked_at": "2026-03-21T10:00:00+00:00",
+                    "updated_at": "2026-03-21T10:00:00+00:00",
+                    "review_state": "open",
+                    "reviewed_at": "2026-03-21T10:00:00+00:00",
+                },
+                ids["never_used"]: {
+                    "note": "Important but forgotten.",
+                    "marked_at": "2026-03-05T10:00:00+00:00",
+                    "updated_at": "2026-03-05T10:00:00+00:00",
+                    "review_state": "unreviewed",
+                    "reviewed_at": None,
+                },
+                ids["fading_used"]: {
+                    "note": "Was useful once.",
+                    "marked_at": "2026-03-06T10:00:00+00:00",
+                    "updated_at": "2026-03-10T10:00:00+00:00",
+                    "review_state": "used",
+                    "reviewed_at": "2026-03-10T10:00:00+00:00",
+                },
+                ids["high_use"]: {
+                    "note": "Keeps coming back.",
+                    "marked_at": "2026-03-02T10:00:00+00:00",
+                    "updated_at": "2026-03-15T10:00:00+00:00",
+                    "review_state": "used",
+                    "reviewed_at": "2026-03-15T10:00:00+00:00",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (glimmer_dir / "usage.json").write_text(
+        json.dumps(
+            {
+                ids["active_open"]: {
+                    "last_used_at": "2026-04-04T10:00:00+00:00",
+                    "use_count": 1,
+                    "use_sources": ["ui.detail"],
+                },
+                ids["fading_used"]: {
+                    "last_used_at": "2026-03-20T10:00:00+00:00",
+                    "use_count": 1,
+                    "use_sources": ["mcp.get_bubble"],
+                },
+                ids["high_use"]: {
+                    "last_used_at": "2026-03-10T10:00:00+00:00",
+                    "use_count": 4,
+                    "use_sources": ["ui.detail", "ui.brief"],
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return ids
+
+
 class GlimmerUIIndexTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -351,6 +511,24 @@ class GlimmerUIIndexTests(unittest.TestCase):
                 ["mcp.get_bubble", "ui.detail"],
             )
 
+    def test_build_index_derives_staleness_from_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            ids = build_staleness_fixture(self.module, glimmer_dir)
+
+            index = self.module.build_index(glimmer_dir, now="2026-04-05T12:00:00+00:00")
+            by_id = {bubble["id"]: bubble for bubble in index["bubbles"]}
+
+            self.assertEqual(by_id[ids["active_open"]]["staleness_bucket"], "active")
+            self.assertEqual(by_id[ids["active_open"]]["days_since_used"], 1)
+            self.assertEqual(by_id[ids["never_used"]]["staleness_bucket"], "stale")
+            self.assertEqual(by_id[ids["never_used"]]["days_since_mattered"], 31)
+            self.assertIn("never revisited", by_id[ids["never_used"]]["staleness_reason"])
+            self.assertEqual(by_id[ids["fading_used"]]["staleness_bucket"], "fading")
+            self.assertEqual(by_id[ids["fading_used"]]["days_since_used"], 16)
+            self.assertEqual(by_id[ids["high_use"]]["staleness_bucket"], "active")
+            self.assertEqual(by_id[ids["high_use"]]["use_count"], 4)
+
 
 class GlimmerUIApiTests(unittest.TestCase):
     @classmethod
@@ -436,6 +614,30 @@ class GlimmerUIApiTests(unittest.TestCase):
             self.assertEqual(brief["recurring_signals"][0]["bubble"]["id"], ids["after"])
             self.assertEqual(inferred["scope"]["project_key"], "alpha")
             self.assertEqual(inferred["scope"]["source"], "cwd")
+
+    def test_review_and_brief_surface_staleness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            ids = build_staleness_fixture(self.module, glimmer_dir)
+
+            index = self.module.build_index(glimmer_dir, now="2026-04-05T12:00:00+00:00")
+            review = self.module.build_review_view(index)
+            brief = self.module.build_brief_view(index, project="alpha")
+            bubble = self.module.build_bubble_view(index, ids["never_used"])
+
+            self.assertEqual(review["staleness_counts"]["active"], 2)
+            self.assertEqual(review["staleness_counts"]["fading"], 1)
+            self.assertEqual(review["staleness_counts"]["stale"], 1)
+            self.assertIn("cooling_off", {hint["key"] for hint in review["hints"]})
+            self.assertEqual(brief["summary"]["active_signal_count"], 2)
+            self.assertEqual(brief["summary"]["fading_signal_count"], 1)
+            self.assertEqual(brief["summary"]["stale_signal_count"], 1)
+            self.assertEqual(
+                [entry["id"] for entry in brief["resurface_now"]],
+                [ids["never_used"], ids["fading_used"]],
+            )
+            self.assertEqual(bubble["bubble"]["staleness_bucket"], "stale")
+            self.assertIn("never revisited", bubble["bubble"]["staleness_reason"])
 
     def test_upsert_matter_defaults_review_state_to_unreviewed(self):
         bubble_id = "bubble-123"

@@ -490,6 +490,13 @@ def format_ts(module, value: str | None) -> str:
     return parsed.strftime("%Y-%m-%d %H:%M")
 
 
+def staleness_text(bubble: dict) -> str:
+    bucket = bubble.get("staleness_bucket")
+    if not bucket:
+        return ""
+    return f"  staleness: {bucket} — {bubble.get('staleness_reason') or '-'}"
+
+
 module = load_module(sys.argv[1])
 glimmer_dir = Path(sys.argv[2]).expanduser()
 output_mode = sys.argv[3]
@@ -608,6 +615,8 @@ for review_state, bubbles in payload["groups"].items():
         print(f'    "{bubble.get("text", "")}"')
         if bubble.get("matter_note"):
             print(f'    note: {bubble["matter_note"]}')
+        if bubble.get("staleness_bucket"):
+            print(f'    {staleness_text(bubble).strip()}')
     print()
 PY
 }
@@ -648,6 +657,8 @@ def brief_line(module, bubble: dict) -> str:
     text = module.truncate_text(bubble.get("text"), 140)
     note = module.truncate_text(bubble.get("matter_note"), 120)
     parts = [f"[{state_label}] {text}"]
+    if bubble.get("staleness_bucket"):
+        parts.append(f"staleness: {bubble['staleness_bucket']}")
     if note:
         parts.append(f"note: {note}")
     parts.append(f"id: {bubble.get('id') or '-'}")
@@ -684,6 +695,7 @@ summary = payload["summary"]
 top_mattered = payload["top_mattered"]
 open_items = payload["open_items"]
 recurring = payload["recurring_signals"]
+resurface_now = payload.get("resurface_now") or []
 
 if output_mode == "markdown":
     print(f"# Glimmer Brief: {scope['project_label']}")
@@ -725,6 +737,14 @@ if output_mode == "markdown":
                 f" | matches: {entry['match_count']}"
                 f" | shared: {token_text}"
             )
+    print()
+    print("## Needs Return")
+    if not resurface_now:
+        print("- Nothing is fading right now.")
+    else:
+        for bubble in resurface_now:
+            label = bubble.get("staleness_reason") or "Worth bringing back."
+            print(f"- {brief_line(module, bubble)} | {label}")
     sys.exit(0)
 
 print(f"Brief: {scope['project_label']}")
@@ -770,6 +790,15 @@ else:
             f" | matches={entry['match_count']}"
             f" | shared={token_text}"
         )
+print()
+
+print("Needs return")
+if not resurface_now:
+    print("  nothing fading right now")
+else:
+    for bubble in resurface_now:
+        label = bubble.get("staleness_reason") or "Worth bringing back."
+        print(f"  - {brief_line(module, bubble)} | {label}")
 PY
 }
 
