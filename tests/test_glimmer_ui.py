@@ -482,7 +482,7 @@ class GlimmerUIIndexTests(unittest.TestCase):
             self.assertEqual(index["overview"]["mattered_count"], 1)
             self.assertTrue(index["bubbles"][0]["mattered"])
             self.assertEqual(index["bubbles"][0]["matter_note"], "This changed the direction.")
-            self.assertEqual(index["bubbles"][0]["review_state"], "open")
+            self.assertEqual(index["bubbles"][0]["review_state"], "active")
             self.assertEqual(index["bubbles"][0]["reviewed_at"], "2026-04-03T11:07:00+00:00")
             self.assertEqual(index["sessions"][0]["mattered_count"], 1)
             self.assertEqual(index["projects"][0]["mattered_count"], 1)
@@ -557,10 +557,10 @@ class GlimmerUIApiTests(unittest.TestCase):
             bubble = self.module.build_bubble_view(index, bubble_id)
 
             self.assertEqual(mattered["count"], 1)
-            self.assertEqual(mattered["counts"]["open"], 1)
+            self.assertEqual(mattered["counts"]["active"], 1)
             self.assertEqual(mattered["bubbles"][0]["id"], bubble_id)
-            self.assertEqual(review["counts"]["open"], 1)
-            self.assertEqual(review["groups"]["open"][0]["id"], bubble_id)
+            self.assertEqual(review["counts"]["active"], 1)
+            self.assertEqual(review["groups"]["active"][0]["id"], bubble_id)
             self.assertEqual(search["count"], 1)
             self.assertEqual(search["bubbles"][0]["id"], bubble_id)
             self.assertEqual(bubble["bubble"]["id"], bubble_id)
@@ -579,7 +579,7 @@ class GlimmerUIApiTests(unittest.TestCase):
             self.assertEqual(review["counts"]["mattered"], 3)
             self.assertEqual(
                 {hint["key"] for hint in review["hints"]},
-                {"needs_review", "oldest_open", "recurring"},
+                {"needs_review", "oldest_active", "recurring"},
             )
             self.assertEqual(bubble["previous_bubble"]["id"], ids["before"])
             self.assertEqual(bubble["next_bubble"]["id"], ids["after"])
@@ -604,7 +604,7 @@ class GlimmerUIApiTests(unittest.TestCase):
             self.assertEqual(brief["scope"]["project_key"], "alpha")
             self.assertEqual(brief["scope"]["source"], "project")
             self.assertEqual(brief["summary"]["mattered_count"], 2)
-            self.assertEqual(brief["summary"]["open_count"], 1)
+            self.assertEqual(brief["summary"]["active_count"], 1)
             self.assertEqual(brief["summary"]["unreviewed_count"], 1)
             self.assertEqual(brief["top_mattered"][0]["id"], ids["after"])
             self.assertEqual(
@@ -671,17 +671,38 @@ class GlimmerUIApiTests(unittest.TestCase):
         matter = self.module.update_review_state(
             matters,
             bubble_id,
-            "used",
+            "resolved",
             now="2026-04-03T11:20:00+00:00",
         )
 
-        self.assertEqual(matter["review_state"], "used")
+        self.assertEqual(matter["review_state"], "resolved")
         self.assertEqual(matter["reviewed_at"], "2026-04-03T11:20:00+00:00")
         self.assertEqual(matters[bubble_id]["updated_at"], "2026-04-03T11:20:00+00:00")
 
     def test_update_review_state_requires_existing_matter(self):
         with self.assertRaises(KeyError):
-            self.module.update_review_state({}, "missing", "used")
+            self.module.update_review_state({}, "missing", "resolved")
+
+    def test_update_review_state_accepts_legacy_aliases(self):
+        bubble_id = "bubble-123"
+        matters = {
+            bubble_id: {
+                "note": "Keep this around.",
+                "marked_at": "2026-04-03T11:00:00+00:00",
+                "updated_at": "2026-04-03T11:05:00+00:00",
+                "review_state": "unreviewed",
+                "reviewed_at": None,
+            }
+        }
+
+        matter = self.module.update_review_state(
+            matters,
+            bubble_id,
+            "used",
+            now="2026-04-03T11:20:00+00:00",
+        )
+
+        self.assertEqual(matter["review_state"], "resolved")
 
     def test_save_matters_writes_private_file_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -703,6 +724,8 @@ class GlimmerUIApiTests(unittest.TestCase):
 
             mode = stat.S_IMODE(matters_path.stat().st_mode)
             self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
+            stored = json.loads(matters_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored["bubble-1"]["review_state"], "active")
             self.assertEqual(
                 list(glimmer_dir.glob(".mattered.json.*.tmp")),
                 [],

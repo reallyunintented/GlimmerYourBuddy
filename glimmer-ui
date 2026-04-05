@@ -33,15 +33,19 @@ USAGE_FILE = "usage.json"
 DEFAULT_REVIEW_STATE = "unreviewed"
 REVIEW_STATES = (
     DEFAULT_REVIEW_STATE,
-    "open",
-    "used",
+    "active",
+    "resolved",
     "stale",
 )
+REVIEW_STATE_ALIASES = {
+    "open": "active",
+    "used": "resolved",
+}
 BRIEF_DEFAULT_LIMIT = 3
 BRIEF_REVIEW_PRIORITY = {
-    "open": 3,
+    "active": 3,
     DEFAULT_REVIEW_STATE: 2,
-    "used": 1,
+    "resolved": 1,
     "stale": 0,
 }
 STALENESS_BUCKETS = ("active", "fading", "stale")
@@ -383,11 +387,17 @@ def _load_matters_unlocked(path: Path) -> dict[str, dict]:
     return matters
 
 
+def normalize_review_state(value: str | None, default: str = DEFAULT_REVIEW_STATE) -> str:
+    review_state = str(value or default).strip().lower()
+    review_state = REVIEW_STATE_ALIASES.get(review_state, review_state)
+    if review_state not in REVIEW_STATES:
+        return default
+    return review_state
+
+
 def normalize_matter(value: dict | None) -> dict:
     value = value if isinstance(value, dict) else {}
-    review_state = str(value.get("review_state") or DEFAULT_REVIEW_STATE)
-    if review_state not in REVIEW_STATES:
-        review_state = DEFAULT_REVIEW_STATE
+    review_state = normalize_review_state(value.get("review_state"))
     return {
         "note": str(value.get("note") or "").strip(),
         "marked_at": value.get("marked_at"),
@@ -403,7 +413,12 @@ def save_matters(path: Path, matters: dict[str, dict]) -> None:
 
 
 def _save_matters_unlocked(path: Path, matters: dict[str, dict]) -> None:
-    payload = json.dumps(matters, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    normalized = {
+        bubble_id: normalize_matter(value)
+        for bubble_id, value in matters.items()
+        if isinstance(bubble_id, str)
+    }
+    payload = json.dumps(normalized, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     write_private_text(path, payload)
 
 
@@ -519,16 +534,16 @@ def derive_staleness(bubble: dict) -> tuple[str | None, str | None]:
             return ("active", f"Revisited {use_count} times, so it is still showing life.")
         return ("fading", f"Revisited {use_count} times before, but not recently.")
 
-    if review_state == "open":
+    if review_state == "active":
         open_days = days_used if days_used is not None else days_mattered
         if open_days is not None and open_days >= STALE_OPEN_UNUSED_DAYS:
-            return ("stale", f"Still open, but untouched for {open_days} days.")
+            return ("stale", f"Still active, but untouched for {open_days} days.")
         if open_days is not None and open_days >= FADING_UNUSED_DAYS:
             return (
                 "fading",
-                f"Still open, but cooling off after {open_days} days without a revisit.",
+                f"Still active, but cooling off after {open_days} days without a revisit.",
             )
-        return ("active", "Still open in the review loop.")
+        return ("active", "Still active in the review loop.")
 
     if use_count == 0:
         if days_mattered is not None and days_mattered >= STALE_NEVER_USED_DAYS:
@@ -544,11 +559,11 @@ def derive_staleness(bubble: dict) -> tuple[str | None, str | None]:
         return ("active", "Freshly marked and still within the active window.")
 
     if days_used is not None and days_used >= STALE_USED_UNUSED_DAYS:
-        return ("stale", f"Used before, but not revisited for {days_used} days.")
+        return ("stale", f"Handled before, but not revisited for {days_used} days.")
     if days_used is not None and days_used >= FADING_UNUSED_DAYS:
         return (
             "fading",
-            f"Used before, but revisit activity has cooled off for {days_used} days.",
+            f"Handled before, but revisit activity has cooled off for {days_used} days.",
         )
     return ("active", "Still active from recent revisit activity.")
 
@@ -765,7 +780,8 @@ def update_review_state(
     *,
     now: str | None = None,
 ) -> dict:
-    if review_state not in REVIEW_STATES:
+    normalized_review_state = normalize_review_state(review_state, default="")
+    if normalized_review_state not in REVIEW_STATES:
         raise ValueError(f"review_state must be one of: {', '.join(REVIEW_STATES)}")
 
     matter = matters.get(bubble_id)
@@ -774,9 +790,9 @@ def update_review_state(
 
     timestamp = now or datetime.now().isoformat()
     normalized = normalize_matter(matter)
-    normalized["review_state"] = review_state
+    normalized["review_state"] = normalized_review_state
     normalized["reviewed_at"] = (
-        None if review_state == DEFAULT_REVIEW_STATE else timestamp
+        None if normalized_review_state == DEFAULT_REVIEW_STATE else timestamp
     )
     normalized["updated_at"] = timestamp
     matters[bubble_id] = normalized
@@ -903,8 +919,8 @@ def build_resurface_hints(index: dict) -> list[dict]:
         key=review_sort_key,
         reverse=True,
     )
-    oldest_open = sorted(
-        [bubble for bubble in mattered if bubble.get("review_state") == "open"],
+    oldest_active = sorted(
+        [bubble for bubble in mattered if bubble.get("review_state") == "active"],
         key=mattered_sort_key,
     )
     recurring = sorted(
@@ -947,13 +963,13 @@ def build_resurface_hints(index: dict) -> list[dict]:
                 "bubble": unreviewed_with_notes[0],
             }
         )
-    if oldest_open:
+    if oldest_active:
         hints.append(
             {
-                "key": "oldest_open",
-                "label": "Oldest open",
-                "copy": "Has stayed open the longest in your review loop.",
-                "bubble": oldest_open[0],
+                "key": "oldest_active",
+                "label": "Oldest active",
+                "copy": "Has stayed active the longest in your review loop.",
+                "bubble": oldest_active[0],
             }
         )
     if recurring and recurring[0]["matches"]:
@@ -995,6 +1011,8 @@ def build_mattered_view(index: dict) -> dict:
             for bubble in bubbles
             if bubble.get("review_state") == review_state
         )
+    counts["open"] = counts["active"]
+    counts["used"] = counts["resolved"]
     return {
         "generated_at": index["generated_at"],
         "count": len(bubbles),
@@ -1015,6 +1033,8 @@ def build_review_view(index: dict) -> dict:
         "counts": {
             "mattered": len(mattered),
             **{review_state: len(groups[review_state]) for review_state in REVIEW_STATES},
+            "open": len(groups["active"]),
+            "used": len(groups["resolved"]),
         },
         "staleness_counts": {
             bucket: sum(1 for bubble in mattered if bubble.get("staleness_bucket") == bucket)
@@ -1166,7 +1186,7 @@ def staleness_priority_key(index: dict, bubble: dict) -> tuple:
         age = bubble.get("days_since_mattered") or -1
     return (
         staleness_priority_value(bubble.get("staleness_bucket")),
-        1 if (bubble.get("review_state") or DEFAULT_REVIEW_STATE) == "open" else 0,
+        1 if (bubble.get("review_state") or DEFAULT_REVIEW_STATE) == "active" else 0,
         age,
         -int(bubble.get("use_count") or 0),
         brief_priority_key(index, bubble),
@@ -1191,7 +1211,7 @@ def build_brief_view(
         bubble
         for bubble in mattered
         if (bubble.get("review_state") or DEFAULT_REVIEW_STATE)
-        in {DEFAULT_REVIEW_STATE, "open"}
+        in {DEFAULT_REVIEW_STATE, "active"}
     ]
     recurring = []
     for bubble in mattered:
@@ -1254,10 +1274,12 @@ def build_brief_view(
             "bubble_count": project_record.get("bubble_count", 0),
             "session_count": project_record.get("session_count", len(scope["sessions"])),
             "mattered_count": len(mattered),
-            "open_count": counts["open"],
+            "active_count": counts["active"],
             "unreviewed_count": counts[DEFAULT_REVIEW_STATE],
-            "used_count": counts["used"],
+            "resolved_count": counts["resolved"],
             "stale_count": counts["stale"],
+            "open_count": counts["active"],
+            "used_count": counts["resolved"],
             "active_signal_count": sum(
                 1 for bubble in mattered if bubble.get("staleness_bucket") == "active"
             ),

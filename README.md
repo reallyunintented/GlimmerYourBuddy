@@ -134,7 +134,7 @@ glimmer-log --brief --markdown
 glimmer-log --mark latest --note "This changed the direction."
 
 # Move a mattered bubble through the review loop
-glimmer-log --review-state latest open
+glimmer-log --review-state latest active
 
 # Get stats
 glimmer-log --stats
@@ -150,7 +150,7 @@ glimmer-ui
 
 That opens a small local app for browsing recent bubbles, mattered bubbles, the review queue, projects, sessions, and search. You can mark a bubble as mattered, add a note, change its review state, inspect related mattered bubbles plus recurrence hints, and see derived staleness based on age and explicit revisit activity. It reads and writes only your local Glimmer files and does not upload anything.
 
-The UI also has a `Brief` view: a compact "before you begin" panel that pulls the top mattered bubbles, open items, and recurring signals for a project, with copy buttons for plain text or markdown agent context.
+The UI also has a `Brief` view: a compact "before you begin" panel that pulls the top mattered bubbles, active items, and recurring signals for a project, with copy buttons for plain text or markdown agent context.
 
 `glimmer-ui` binds to `127.0.0.1` by default. Keep it on loopback unless you intentionally proxy or expose it yourself.
 
@@ -186,6 +186,12 @@ Current routes:
 
 This API is local-only and meant to support the UI first. It is also the foundation for future agent integrations.
 
+Review lifecycle:
+- `unreviewed` — newly marked, not triaged yet
+- `active` — still relevant and worth keeping in working memory
+- `resolved` — handled and can rest without active attention now
+- `stale` — cooled off or no longer worth carrying
+
 ### Use as an MCP Server
 Glimmer includes a read-only MCP server so Claude Code agents can query your archive directly.
 
@@ -210,7 +216,7 @@ If you prefer to edit the config directly, user-scoped MCP servers live in `~/.c
 ```
 
 Available tools:
-- `get_brief` — Project brief with top mattered bubbles, open items, and recurring signals
+- `get_brief` — Project brief with top mattered bubbles, active items, and recurring signals
 - `list_mattered` — All mattered bubbles with counts by review state
 - `get_review` — Mattered bubbles grouped by review state plus resurface hints
 - `search_bubbles` — Case-insensitive search across bubble text, notes, and metadata
@@ -326,7 +332,7 @@ $ glimmer-claude --glimmer-brief
 [glimmer-claude] Brief for this project
 Brief: GlimmerYourBuddy
 Scope: cwd  cwd=/home/notprinted/glimmer
-Mattered: 4  Open: 2  Unreviewed: 1  Used: 1  Stale: 0
+Mattered: 4  Active: 2  Unreviewed: 1  Resolved: 1  Stale: 0
 ```
 
 ### Later, before they scroll away forever

@@ -151,6 +151,22 @@ Non-goals for this layer:
 
 Keep usage recording at interface boundaries, not deep inside ranking, search, or recurrence helpers.
 
+## Review Lifecycle
+
+Canonical review states are:
+
+- `unreviewed` — newly marked, not triaged yet
+- `active` — still relevant and worth keeping in working memory
+- `resolved` — handled and can rest without active attention now
+- `stale` — cooled off or no longer worth carrying
+
+Compatibility mapping at read time:
+
+- `open` -> `active`
+- `used` -> `resolved`
+
+New writes should only emit canonical values. The shared backend is responsible for normalizing aliases on load and before save.
+
 ## Code Style
 
 - Shell scripts: keep it simple and portable (bash 4+)

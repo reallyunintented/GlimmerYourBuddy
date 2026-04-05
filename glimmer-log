@@ -520,8 +520,8 @@ if not payload["bubbles"]:
 print(f'Mattered bubbles: {payload["count"]}')
 print(
     f'Unreviewed: {payload["counts"]["unreviewed"]}  '
-    f'Open: {payload["counts"]["open"]}  '
-    f'Used: {payload["counts"]["used"]}  '
+    f'Active: {payload["counts"]["active"]}  '
+    f'Resolved: {payload["counts"]["resolved"]}  '
     f'Stale: {payload["counts"]["stale"]}'
 )
 print()
@@ -570,7 +570,7 @@ def format_ts(module, value: str | None) -> str:
 module = load_module(sys.argv[1])
 glimmer_dir = Path(sys.argv[2]).expanduser()
 output_mode = sys.argv[3]
-review_filter = sys.argv[4]
+review_filter = module.normalize_review_state(sys.argv[4], default="") if sys.argv[4] else ""
 index = module.build_index(glimmer_dir)
 payload = module.build_review_view(index)
 module.record_usage_for_index(
@@ -706,8 +706,8 @@ if output_mode == "markdown":
     )
     print(
         f"- Summary: {summary['mattered_count']} mattered, "
-        f"{summary['open_count']} open, {summary['unreviewed_count']} unreviewed, "
-        f"{summary['used_count']} used, {summary['stale_count']} stale"
+        f"{summary['active_count']} active, {summary['unreviewed_count']} unreviewed, "
+        f"{summary['resolved_count']} resolved, {summary['stale_count']} stale"
     )
     if summary.get("last_seen_at"):
         print(f"- Last seen: {format_ts(module, summary['last_seen_at'])}")
@@ -719,9 +719,9 @@ if output_mode == "markdown":
         for bubble in top_mattered:
             print(f"- {brief_line(module, bubble)}")
     print()
-    print("## Open Items")
+    print("## Active Items")
     if not open_items:
-        print("- Nothing open right now.")
+        print("- Nothing active right now.")
     else:
         for bubble in open_items:
             print(f"- {brief_line(module, bubble)}")
@@ -754,9 +754,9 @@ print(
 )
 print(
     f"Mattered: {summary['mattered_count']}  "
-    f"Open: {summary['open_count']}  "
+    f"Active: {summary['active_count']}  "
     f"Unreviewed: {summary['unreviewed_count']}  "
-    f"Used: {summary['used_count']}  "
+    f"Resolved: {summary['resolved_count']}  "
     f"Stale: {summary['stale_count']}"
 )
 if summary.get("last_seen_at"):
@@ -771,9 +771,9 @@ else:
         print(f"  - {brief_line(module, bubble)}")
 print()
 
-print("Open items")
+print("Active items")
 if not open_items:
-    print("  nothing open right now")
+    print("  nothing active right now")
 else:
     for bubble in open_items:
         print(f"  - {brief_line(module, bubble)}")
@@ -960,7 +960,8 @@ show_help() {
     echo "  --unmark ID       Remove mattered mark from a bubble"
     echo "  --note TEXT       Optional note for --mark"
     echo "  --review-state ID STATE"
-    echo "                    Set review state: unreviewed, open, used, stale"
+    echo "                    Set review state: unreviewed, active, resolved, stale"
+    echo "                    Legacy aliases still work: open -> active, used -> resolved"
     echo "  --cleanup-raw     Remove raw capture files older than 14 days"
     echo "  --cleanup-raw N   Remove raw capture files older than N days"
     echo "  --add \"text\"      Manually add a bubble"

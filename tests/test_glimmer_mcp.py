@@ -222,7 +222,7 @@ class TestGetReview(unittest.TestCase):
             result = self.module._tool_get_review(index)
             self.assertIn("groups", result)
             self.assertIn("counts", result)
-            for state in ("unreviewed", "open", "used", "stale"):
+            for state in ("unreviewed", "active", "resolved", "stale"):
                 self.assertIn(state, result["groups"])
 
 
@@ -356,7 +356,7 @@ class TestUsageRecording(unittest.TestCase):
                 review_payload = json.loads(self.module.get_review())
 
             self.assertEqual(mattered_payload["count"], 1)
-            self.assertEqual(review_payload["counts"]["used"], 1)
+            self.assertEqual(review_payload["counts"]["resolved"], 1)
             usage = self.load_usage(glimmer_dir)
             self.assertEqual(usage[bubble_id]["use_count"], 2)
             self.assertEqual(

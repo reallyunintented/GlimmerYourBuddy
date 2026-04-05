@@ -160,7 +160,7 @@ def get_brief(
     cwd: str | None = None,
     limit: int = DEFAULT_BRIEF_LIMIT,
 ) -> str:
-    """Get a project brief: top mattered bubbles, open items, and recurring signals."""
+    """Get a project brief: top mattered bubbles, active items, and recurring signals."""
     index = _build_index()
     payload = _tool_get_brief(index, project=project, session_id=session_id, cwd=cwd, limit=limit)
     _ui.record_usage_for_index(

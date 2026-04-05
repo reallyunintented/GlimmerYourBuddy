@@ -34,20 +34,20 @@ const elements = {
   emptyTemplate: document.getElementById("empty-state-template"),
 };
 
-const REVIEW_STATES = ["unreviewed", "open", "used", "stale"];
+const REVIEW_STATES = ["unreviewed", "active", "resolved", "stale"];
 
 const REVIEW_META = {
   unreviewed: {
     label: "Unreviewed",
     description: "Freshly marked, not revisited yet.",
   },
-  open: {
-    label: "Open",
-    description: "Still active or worth carrying forward.",
+  active: {
+    label: "Active",
+    description: "Still relevant and worth keeping in working memory.",
   },
-  used: {
-    label: "Used",
-    description: "Already folded back into the work.",
+  resolved: {
+    label: "Resolved",
+    description: "Handled and can rest without active attention now.",
   },
   stale: {
     label: "Stale",
@@ -58,7 +58,7 @@ const REVIEW_META = {
 const REVIEW_SORT_META = {
   recently_marked: "Recently marked",
   recently_reviewed: "Recently reviewed",
-  oldest_open: "Oldest open",
+  oldest_active: "Oldest active",
 };
 
 const STALENESS_META = {
@@ -318,8 +318,8 @@ const sortReviewBubbles = (bubbles, reviewState) => {
       return rightTime - leftTime || reviewSortKey(right) - reviewSortKey(left);
     });
   }
-  if (state.reviewSort === "oldest_open") {
-    if (reviewState !== "open") {
+  if (state.reviewSort === "oldest_active") {
+    if (reviewState !== "active") {
       return items.sort((left, right) => reviewSortKey(right) - reviewSortKey(left));
     }
     return items.sort((left, right) => {
@@ -727,14 +727,19 @@ const renderBrief = () => {
         <p>Signals you explicitly kept from this project.</p>
       </div>
       <div class="review-summary-card">
-        <div class="card-meta">Open</div>
-        <strong>${summary.open_count ?? 0}</strong>
-        <p>Items still active in the review loop.</p>
+        <div class="card-meta">Active</div>
+        <strong>${summary.active_count ?? 0}</strong>
+        <p>Signals still alive in the review loop.</p>
       </div>
       <div class="review-summary-card">
         <div class="card-meta">Unreviewed</div>
         <strong>${summary.unreviewed_count ?? 0}</strong>
         <p>Freshly marked bubbles you have not revisited yet.</p>
+      </div>
+      <div class="review-summary-card">
+        <div class="card-meta">Resolved</div>
+        <strong>${summary.resolved_count ?? 0}</strong>
+        <p>Handled signals that can rest now.</p>
       </div>
       <div class="review-summary-card">
         <div class="card-meta">Needs return</div>
@@ -765,12 +770,12 @@ const renderBrief = () => {
     <section>
       <div class="section-header">
         <div>
-          <h3 class="section-title">Open Items</h3>
-          <p class="section-copy">Still-active matters that should stay in working memory.</p>
+          <h3 class="section-title">Active Items</h3>
+          <p class="section-copy">Signals that still belong in working memory right now.</p>
         </div>
         <span class="muted">${openItems.length}</span>
       </div>
-      ${openItems.length ? `<div class="card-list">${openItems.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>` : '<div class="review-empty">Nothing open right now.</div>'}
+      ${openItems.length ? `<div class="card-list">${openItems.map((bubble) => bubbleCard(bubble, { compact: true })).join("")}</div>` : '<div class="review-empty">Nothing active right now.</div>'}
     </section>
     <section>
       <div class="section-header">
@@ -1070,17 +1075,17 @@ const buildBriefCopyText = (mode = "plain") => {
       `# Glimmer Brief: ${brief.scope.project_label || "Brief"}`,
       "",
       `- Scope: ${brief.scope.source}${brief.scope.cwd ? ` · cwd=${brief.scope.cwd}` : ""}`,
-      `- Summary: ${summary.mattered_count ?? 0} mattered, ${summary.open_count ?? 0} open, ${summary.unreviewed_count ?? 0} unreviewed, ${summary.used_count ?? 0} used, ${summary.stale_count ?? 0} stale`,
+      `- Summary: ${summary.mattered_count ?? 0} mattered, ${summary.active_count ?? 0} active, ${summary.unreviewed_count ?? 0} unreviewed, ${summary.resolved_count ?? 0} resolved, ${summary.stale_count ?? 0} stale`,
       "",
       "## Top Mattered",
       ...(brief.top_mattered?.length
         ? brief.top_mattered.map((bubble) => `- ${lineForBubble(bubble)}`)
         : ["- No mattered bubbles for this project yet."]),
       "",
-      "## Open Items",
+      "## Active Items",
       ...(brief.open_items?.length
         ? brief.open_items.map((bubble) => `- ${lineForBubble(bubble)}`)
-        : ["- Nothing open right now."]),
+        : ["- Nothing active right now."]),
       "",
       "## Recurring Signals",
       ...(brief.recurring_signals?.length
@@ -1102,17 +1107,17 @@ const buildBriefCopyText = (mode = "plain") => {
   return [
     `Brief: ${brief.scope.project_label || "Brief"}`,
     `Scope: ${brief.scope.source}${brief.scope.cwd ? `  cwd=${brief.scope.cwd}` : ""}`,
-    `Mattered: ${summary.mattered_count ?? 0}  Open: ${summary.open_count ?? 0}  Unreviewed: ${summary.unreviewed_count ?? 0}  Used: ${summary.used_count ?? 0}  Stale: ${summary.stale_count ?? 0}`,
+    `Mattered: ${summary.mattered_count ?? 0}  Active: ${summary.active_count ?? 0}  Unreviewed: ${summary.unreviewed_count ?? 0}  Resolved: ${summary.resolved_count ?? 0}  Stale: ${summary.stale_count ?? 0}`,
     "",
     "Top mattered",
     ...(brief.top_mattered?.length
       ? brief.top_mattered.map((bubble) => `  - ${lineForBubble(bubble)}`)
       : ["  none yet"]),
     "",
-    "Open items",
+    "Active items",
     ...(brief.open_items?.length
       ? brief.open_items.map((bubble) => `  - ${lineForBubble(bubble)}`)
-      : ["  nothing open right now"]),
+      : ["  nothing active right now"]),
     "",
     "Recurring signals",
     ...(brief.recurring_signals?.length

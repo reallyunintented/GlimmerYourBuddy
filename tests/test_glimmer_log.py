@@ -415,13 +415,13 @@ class GlimmerLogMatterCommandTests(unittest.TestCase):
         matters = json.loads(
             (self.glimmer_dir / "mattered.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(matters[self.latest_bubble_id]["review_state"], "used")
+        self.assertEqual(matters[self.latest_bubble_id]["review_state"], "resolved")
         self.assertIsNotNone(matters[self.latest_bubble_id]["reviewed_at"])
 
         output = self.run_glimmer_log("--review", "used", "--json")
         payload = json.loads(output)
-        self.assertEqual(len(payload["groups"]["used"]), 1)
-        self.assertEqual(payload["groups"]["used"][0]["id"], self.latest_bubble_id)
+        self.assertEqual(len(payload["groups"]["resolved"]), 1)
+        self.assertEqual(payload["groups"]["resolved"][0]["id"], self.latest_bubble_id)
 
     def test_mark_and_review_state_record_usage(self):
         self.run_glimmer_log("--mark", "latest", "--note", "Keep this one.")
@@ -631,7 +631,7 @@ class GlimmerLogBriefCommandTests(unittest.TestCase):
 
         self.assertEqual(payload["scope"]["project_key"], "alpha")
         self.assertEqual(payload["summary"]["mattered_count"], 2)
-        self.assertEqual(payload["summary"]["open_count"], 1)
+        self.assertEqual(payload["summary"]["active_count"], 1)
         self.assertEqual(payload["top_mattered"][0]["id"], self.ids["after"])
         self.assertEqual(payload["recurring_signals"][0]["bubble"]["id"], self.ids["after"])
 
@@ -646,7 +646,7 @@ class GlimmerLogBriefCommandTests(unittest.TestCase):
         output = self.run_glimmer_log("--brief", "--cwd", "/work/alpha/src")
 
         self.assertIn("Brief: alpha", output)
-        self.assertIn("Open items", output)
+        self.assertIn("Active items", output)
 
     def test_brief_records_usage_once_per_returned_bubble(self):
         self.run_glimmer_log("--brief", "--project", "alpha", "--json")
