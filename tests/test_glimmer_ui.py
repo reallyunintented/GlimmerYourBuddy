@@ -1361,5 +1361,92 @@ class EmoteStateClassTests(unittest.TestCase):
             self.assertEqual(result2["bubbles"][0]["state_class"], "uncertain")
 
 
+class EmoteArcTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_module()
+
+    def test_build_emote_arc_collapses_consecutive(self):
+        bubbles = [
+            {"state_class": "observing"},
+            {"state_class": "observing"},
+            {"state_class": "uncertain"},
+            {"state_class": "warm"},
+            {"state_class": "warm"},
+            {"state_class": "warm"},
+        ]
+        arc = self.module.build_emote_arc(bubbles)
+        self.assertEqual(len(arc), 3)
+        self.assertEqual(arc[0], {"state": "observing", "count": 2})
+        self.assertEqual(arc[1], {"state": "uncertain", "count": 1})
+        self.assertEqual(arc[2], {"state": "warm", "count": 3})
+
+    def test_build_emote_arc_skips_none(self):
+        bubbles = [
+            {"state_class": "observing"},
+            {"state_class": None},
+            {"state_class": "calm"},
+        ]
+        arc = self.module.build_emote_arc(bubbles)
+        self.assertEqual(len(arc), 2)
+        self.assertEqual(arc[0]["state"], "observing")
+        self.assertEqual(arc[1]["state"], "calm")
+
+    def test_build_emote_arc_empty(self):
+        self.assertEqual(self.module.build_emote_arc([]), [])
+
+    def test_session_includes_emote_arc(self):
+        m = self.module
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            (glimmer_dir / "sessions").mkdir()
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            write_jsonl(glimmer_dir / "events.jsonl", [
+                {
+                    "timestamp": "2026-04-03T10:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*drifts closer* hello",
+                    "emote_verb": "drifts",
+                    "source": "auto",
+                    "session_id": "s1",
+                },
+                {
+                    "timestamp": "2026-04-03T10:01:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*flickers* hmm",
+                    "emote_verb": "flickers",
+                    "source": "auto",
+                    "session_id": "s1",
+                },
+            ])
+            index = m.build_index(glimmer_dir)
+            session = index["sessions"][0]
+            self.assertIn("emote_arc", session)
+            self.assertEqual(len(session["emote_arc"]), 2)
+            self.assertEqual(session["emote_arc"][0]["state"], "observing")
+            self.assertEqual(session["emote_arc"][1]["state"], "uncertain")
+
+    def test_session_bubbles_have_state_class(self):
+        m = self.module
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            (glimmer_dir / "sessions").mkdir()
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            write_jsonl(glimmer_dir / "events.jsonl", [
+                {
+                    "timestamp": "2026-04-03T10:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "*shimmers* nice",
+                    "emote_verb": "shimmers",
+                    "source": "auto",
+                    "session_id": "s1",
+                },
+            ])
+            index = m.build_index(glimmer_dir)
+            bubble = index["sessions"][0]["bubbles"][0]
+            self.assertIn("state_class", bubble)
+            self.assertEqual(bubble["state_class"], "warm")
+
+
 if __name__ == "__main__":
     unittest.main()

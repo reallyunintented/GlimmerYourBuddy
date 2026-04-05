@@ -592,6 +592,73 @@ textarea {
   font-size: 0.92rem;
 }
 
+.emote-arc {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+
+.arc-track {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+}
+
+.arc-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 6px;
+  background: color-mix(in srgb, var(--arc-color) 18%, transparent);
+  border-radius: 3px;
+  min-width: 12px;
+  transition: opacity 0.15s;
+}
+
+.arc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.arc-arrow {
+  color: var(--muted);
+  font-size: 0.7rem;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.arc-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 8px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.arc-label {
+  opacity: 0.85;
+}
+
+.compact-arc {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+}
+
+.arc-dot-inline {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
 .review-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

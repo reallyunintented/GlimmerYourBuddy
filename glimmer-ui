@@ -625,6 +625,20 @@ def apply_state_class(bubbles: list[dict]) -> None:
         bubble["state_class"] = derive_state_class(bubble)
 
 
+def build_emote_arc(bubbles: list[dict]) -> list[dict]:
+    """Collapse consecutive same-state bubbles into arc segments."""
+    arc: list[dict] = []
+    for bubble in bubbles:
+        state = bubble.get("state_class")
+        if state is None:
+            continue
+        if arc and arc[-1]["state"] == state:
+            arc[-1]["count"] += 1
+        else:
+            arc.append({"state": state, "count": 1})
+    return arc
+
+
 def record_usage(
     usage: dict[str, dict],
     bubble_ids: list[str],
@@ -1624,6 +1638,7 @@ def build_sessions(
         apply_matters(bubbles, matters)
         apply_usage(bubbles, usage)
         apply_staleness(bubbles, now=now)
+        apply_state_class(bubbles)
         latest = bubbles[-1] if bubbles else None
         started_at = session_field(manifest, bubbles, "started_at") or (
             bubbles[0].get("timestamp") if bubbles else None
@@ -1649,6 +1664,7 @@ def build_sessions(
                 "mattered_count": sum(1 for bubble in bubbles if bubble.get("mattered")),
                 "latest_bubble_preview": latest.get("preview") if latest else "",
                 "latest_bubble_at": latest_seen,
+                "emote_arc": build_emote_arc(bubbles),
                 "bubbles": bubbles,
             }
         )

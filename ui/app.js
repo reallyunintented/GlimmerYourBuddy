@@ -3,6 +3,7 @@ const createSearchFilters = () => ({
   reviewStates: [],
   staleness: [],
   contexts: [],
+  stateClasses: [],
   profile: null,
   hasNote: false,
 });
@@ -98,6 +99,16 @@ const MATTER_CONTEXT_META = {
   random: {
     label: "Random",
   },
+};
+
+const STATE_CLASS_META = {
+  observing: { label: "Observing", color: "#6b8fa3" },
+  uncertain: { label: "Uncertain", color: "#c4884d" },
+  transitioning: { label: "Transitioning", color: "#8b7ec8" },
+  warm: { label: "Warm", color: "#c47a8a" },
+  calm: { label: "Calm", color: "#6ba389" },
+  concerned: { label: "Concerned", color: "#b5784e" },
+  unknown: { label: "Unknown", color: "#94a3b8" },
 };
 
 const formatDateTime = (value) => {
@@ -196,7 +207,8 @@ const searchHasActiveFilters = () => {
       filters.hasNote ||
       filters.reviewStates.length ||
       filters.staleness.length ||
-      filters.contexts.length
+      filters.contexts.length ||
+      filters.stateClasses.length
   );
 };
 
@@ -309,6 +321,10 @@ const bubbleChips = (bubble) => {
     chips.push(
       `<span class="chip">${escapeHtml(STALENESS_META[bubble.staleness_bucket]?.label || bubble.staleness_bucket)}</span>`
     );
+  }
+  if (bubble.state_class && bubble.state_class !== "unknown") {
+    const meta = STATE_CLASS_META[bubble.state_class] || STATE_CLASS_META.unknown;
+    chips.push(`<span class="chip chip-state" style="border-color: ${meta.color}40; color: ${meta.color}">${escapeHtml(meta.label)}</span>`);
   }
   if (bubble.project_name) chips.push(`<span class="chip">${escapeHtml(bubble.project_name)}</span>`);
   if (bubble.git_branch) chips.push(`<span class="chip">${escapeHtml(bubble.git_branch)}</span>`);
@@ -509,6 +525,7 @@ const renderSessions = () => {
             <span class="chip">${escapeHtml(session.git_branch || "No branch")}</span>
             <span class="chip">${session.ended_at ? "Ended" : "Open"}</span>
           </div>
+          ${renderCompactArc(session.emote_arc)}
           <p class="card-text">${escapeHtml(session.latest_bubble_preview || "No bubble preview yet.")}</p>
           <div class="card-meta">${escapeHtml(session.cwd || "No cwd recorded")}</div>
         </article>
@@ -516,6 +533,34 @@ const renderSessions = () => {
     )
     .join("");
   elements.mainContent.append(stack);
+};
+
+const renderCompactArc = (arc) => {
+  if (!arc || !arc.length) return "";
+  const dots = arc.map((seg) => {
+    const meta = STATE_CLASS_META[seg.state] || STATE_CLASS_META.unknown;
+    return `<span class="arc-dot-inline" style="background: ${meta.color}" title="${meta.label} (${seg.count})"></span>`;
+  }).join("");
+  return `<div class="compact-arc">${dots}</div>`;
+};
+
+const renderEmoteArc = (arc) => {
+  if (!arc || !arc.length) return "";
+  const segments = arc.map((seg) => {
+    const meta = STATE_CLASS_META[seg.state] || STATE_CLASS_META.unknown;
+    const width = seg.count;
+    return `<span class="arc-segment" style="--arc-color: ${meta.color}; flex: ${width}" title="${meta.label} (${seg.count})">
+      <span class="arc-dot" style="background: ${meta.color}"></span>
+    </span>`;
+  }).join('<span class="arc-arrow">→</span>');
+  const labels = arc.map((seg) => {
+    const meta = STATE_CLASS_META[seg.state] || STATE_CLASS_META.unknown;
+    return `<span class="arc-label" style="color: ${meta.color}">${meta.label}</span>`;
+  }).join("");
+  return `<div class="emote-arc">
+    <div class="arc-track">${segments}</div>
+    <div class="arc-labels">${labels}</div>
+  </div>`;
 };
 
 const renderSessionDetail = () => {
@@ -537,6 +582,7 @@ const renderSessionDetail = () => {
       </div>
       <div class="meta-line">${escapeHtml(session.cwd || "No cwd recorded")} · ${escapeHtml(formatDateTime(session.started_at))}${session.ended_at ? ` → ${escapeHtml(formatDateTime(session.ended_at))}` : ""}</div>
     </section>
+    ${renderEmoteArc(session.emote_arc)}
     <section class="timeline">
       ${session.bubbles.map((bubble) => bubbleCard(bubble)).join("")}
     </section>
@@ -640,6 +686,25 @@ const renderSearch = () => {
               class="chip-button ${state.searchFilters.profile === 'ambient' ? 'is-active' : ''}"
               data-profile-chip="ambient"
             >ambient</button>
+          </div>
+        </div>
+        <div class="search-filter-block">
+          <span class="context-label">Emote State</span>
+          <div class="review-filter-row">
+            ${Object.entries(STATE_CLASS_META)
+              .filter(([key]) => key !== "unknown")
+              .map(
+                ([cls, meta]) => `
+                  <button
+                    class="chip-button ${(state.searchFilters.stateClasses || []).includes(cls) ? "is-active" : ""}"
+                    data-search-filter="stateClasses"
+                    data-search-filter-value="${cls}"
+                  >
+                    ${escapeHtml(meta.label)}
+                  </button>
+                `
+              )
+              .join("")}
           </div>
         </div>
       </div>
@@ -1468,6 +1533,7 @@ const loadSearch = async ({ renderAfter = true } = {}) => {
     state.searchFilters.staleness.forEach((value) => params.append("staleness", value));
     state.searchFilters.contexts.forEach((value) => params.append("context", value));
     if (state.searchFilters.profile) params.set("profile", state.searchFilters.profile.trim().toLowerCase());
+    state.searchFilters.stateClasses.forEach((value) => params.append("state_class", value));
 
     const response = await fetch(`/api/search?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
