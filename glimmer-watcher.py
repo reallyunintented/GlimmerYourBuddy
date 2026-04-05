@@ -23,9 +23,12 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 from datetime import datetime, timezone
 from pathlib import Path
 
-LOGFILE = Path.home() / ".claude" / "glimmer" / "log.jsonl"
-EVENTSFILE = Path.home() / ".claude" / "glimmer" / "events.jsonl"
-WATCHERLOG = Path.home() / ".claude" / "glimmer" / "watcher.log"
+DEFAULT_GLIMMER_DIR = Path(
+    os.environ.get("GLIMMER_DATA_DIR", Path.home() / ".claude" / "glimmer")
+)
+LOGFILE = DEFAULT_GLIMMER_DIR / "log.jsonl"
+EVENTSFILE = DEFAULT_GLIMMER_DIR / "events.jsonl"
+WATCHERLOG = DEFAULT_GLIMMER_DIR / "watcher.log"
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 # How often to scan the buffer (seconds)
@@ -72,6 +75,7 @@ SESSION_CONTEXT_KEYS = (
     "project_name",
     "git_branch",
     "is_repo_root",
+    "session_profile",
 )
 
 
@@ -354,6 +358,7 @@ def build_entry(
         "project_name": session_ctx.get("project_name"),
         "git_branch": session_ctx.get("git_branch"),
         "is_repo_root": session_ctx.get("is_repo_root"),
+        "session_profile": session_ctx.get("session_profile"),
         "trigger_type": trigger_ctx.get("trigger_type", "unknown"),
         "trigger_confidence": trigger_ctx.get("trigger_confidence", "none"),
     }

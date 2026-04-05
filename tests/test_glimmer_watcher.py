@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -200,6 +201,73 @@ class WatcherEventShapeTests(unittest.TestCase):
                 self.module.LOGFILE = original_logfile
                 self.module.EVENTSFILE = original_eventsfile
                 self.module.WATCHERLOG = original_watcherlog
+
+    def test_module_uses_glimmer_data_dir_when_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_dir = Path(tmp) / "pet"
+            original = os.environ.get("GLIMMER_DATA_DIR")
+            os.environ["GLIMMER_DATA_DIR"] = str(archive_dir)
+            try:
+                module = load_module()
+            finally:
+                if original is None:
+                    os.environ.pop("GLIMMER_DATA_DIR", None)
+                else:
+                    os.environ["GLIMMER_DATA_DIR"] = original
+
+            self.assertEqual(module.DEFAULT_GLIMMER_DIR, archive_dir)
+            self.assertEqual(module.LOGFILE, archive_dir / "log.jsonl")
+            self.assertEqual(module.EVENTSFILE, archive_dir / "events.jsonl")
+            self.assertEqual(module.WATCHERLOG, archive_dir / "watcher.log")
+
+    def test_load_session_context_copies_session_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "session.json"
+            manifest = {
+                "session_id": "s-1",
+                "session_profile": "pet",
+                "companion": "Glimmer",
+                "raw_path": "/tmp/session.raw",
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            context = self.module.load_session_context(
+                "/tmp/session.raw",
+                "Glimmer",
+                "s-1",
+                str(manifest_path),
+            )
+
+            self.assertEqual(context.get("session_profile"), "pet")
+
+    def test_build_entry_includes_session_profile(self):
+        session_ctx = {"session_id": "s-1", "session_profile": "ambient"}
+        trigger_ctx = {"trigger_type": "unknown", "trigger_confidence": "none"}
+        entry = self.module.build_entry(
+            "Hello",
+            "Glimmer",
+            session_ctx,
+            1,
+            trigger_ctx,
+            "2026-04-05T00:00:00+00:00",
+        )
+        self.assertEqual(entry["session_profile"], "ambient")
+
+    def test_build_entry_profile_none_when_not_set(self):
+        session_ctx = {"session_id": "s-1"}
+        trigger_ctx = {"trigger_type": "unknown", "trigger_confidence": "none"}
+        entry = self.module.build_entry(
+            "Hi",
+            "Glimmer",
+            session_ctx,
+            1,
+            trigger_ctx,
+            "2026-04-05T00:00:00+00:00",
+        )
+        self.assertIsNone(entry.get("session_profile"))
 
 
 if __name__ == "__main__":
