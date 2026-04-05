@@ -148,7 +148,6 @@ USAGE_SOURCES = {
     "mcp.get_review",
     "mcp.search_bubbles",
     "mcp.get_bubble",
-    "auto.session_start",
 }
 
 

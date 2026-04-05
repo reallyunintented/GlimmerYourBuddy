@@ -1051,9 +1051,6 @@ class GlimmerUIApiTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.module.validate_remote_auth("0.0.0.0", True, None)
 
-    def test_usage_sources_includes_auto_session_start(self):
-        self.assertIn("auto.session_start", self.module.USAGE_SOURCES)
-
     def test_build_brief_view_filters_by_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             glimmer_dir = Path(tmp)

@@ -7,7 +7,6 @@
 # $GLIMMER_DATA_DIR/log.jsonl (default: ~/.claude/glimmer/log.jsonl)
 #
 # Usage: glimmer-claude [any claude args...]
-#        glimmer-claude --glimmer-brief [any claude args...]
 #
 
 set -euo pipefail
@@ -49,17 +48,6 @@ if [ -z "$LOG_HELPER" ]; then
         LOG_HELPER="$SCRIPT_DIR/glimmer-log"
     else
         LOG_HELPER="$HOME/.local/bin/glimmer-log"
-    fi
-fi
-
-CONTEXT_HELPER="${GLIMMER_CONTEXT_HELPER:-}"
-if [ -z "$CONTEXT_HELPER" ]; then
-    if command -v glimmer-context.py >/dev/null 2>&1; then
-        CONTEXT_HELPER="$(command -v glimmer-context.py)"
-    elif [ -x "$SCRIPT_DIR/glimmer-context.py" ]; then
-        CONTEXT_HELPER="$SCRIPT_DIR/glimmer-context.py"
-    else
-        CONTEXT_HELPER="$HOME/.local/bin/glimmer-context.py"
     fi
 fi
 
@@ -173,21 +161,6 @@ show_start_brief() {
     echo ""
 }
 
-GLIMMER_CONTEXT_FILE=""
-
-inject_context() {
-    if [ ! -x "$CONTEXT_HELPER" ]; then
-        return
-    fi
-    local context_path
-    context_path="$(python3 "$CONTEXT_HELPER" --cwd "$PWD_VALUE" 2>/dev/null)" || return
-    if [ -z "$context_path" ] || [ ! -f "$context_path" ]; then
-        return
-    fi
-    GLIMMER_CONTEXT_FILE="$context_path"
-    CLAUDE_ARGS=("--append-system-prompt-file" "$context_path" "${CLAUDE_ARGS[@]}")
-}
-
 finalize_session_manifest() {
     local ended_at="$1"
     python3 "$SESSION_HELPER" finalize "$MANIFEST_PATH" "$SESSION_ID" "$ended_at"
@@ -202,10 +175,6 @@ cleanup() {
 
     ended_at="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
     finalize_session_manifest "$ended_at"
-
-    if [ -n "${GLIMMER_CONTEXT_FILE:-}" ] && [ -f "$GLIMMER_CONTEXT_FILE" ]; then
-        rm -f "$GLIMMER_CONTEXT_FILE"
-    fi
 
     if [ -n "${WATCHER_PID:-}" ] && kill -0 "$WATCHER_PID" 2>/dev/null; then
         kill -TERM "$WATCHER_PID" 2>/dev/null || true
@@ -235,7 +204,6 @@ echo "  Log file:  $GLIMMER_DIR/log.jsonl"
 echo ""
 
 show_start_brief
-inject_context
 
 # Start the watcher in background
 python3 "$WATCHER" "$TYPESCRIPT" "$COMPANION_NAME" "$SESSION_ID" "$MANIFEST_PATH" &

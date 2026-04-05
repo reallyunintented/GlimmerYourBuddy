@@ -19,7 +19,6 @@ When you use Claude Code with Glimmer enabled, it:
 - **Stores exact session context** like cwd, project name, repo root, and branch
 - **Tags sessions** with a profile (e.g. `pet`, `ambient`, `work`) so you can filter context by intent
 - **Tags** exact `/buddy pet` reactions and best-effort post-prompt bubbles
-- **Injects a brief** automatically into Claude's system prompt at session start — no flags needed, one-time memory jog per session
 - **Lets you browse** them in a local archive UI with recent, mattered, review, project, session, and search views
 - **Lets you mark** a bubble as mattered, attach a short note, and move it through a review state
 - **Surfaces recurrence cues** so related mattered bubbles and repeated themes can come back later
@@ -27,7 +26,7 @@ When you use Claude Code with Glimmer enabled, it:
 - **Derives honest staleness** so Glimmer can show what is still active, what is fading, and what needs to come back now
 - **Exposes local interfaces** for people and tools through the UI, `glimmer-log`, and a small localhost JSON API
 
-It is a local-first significance layer for things your Claude buddy said that actually changed the work. And starting in v0.4.0, it automatically injects a brief summary of mattered bubbles into Claude's system prompt at session start — so you get a quick memory jog without copy-pasting.
+It is a local-first significance layer for things your Claude buddy said that actually changed the work.
 
 ---
 
@@ -92,7 +91,7 @@ Instead of `claude`, run:
 glimmer-claude
 ```
 
-It starts your normal Claude Code session **and** captures every speech bubble your buddy makes. It also automatically injects a text summary of mattered bubbles into your system prompt so you get a quick memory jog before you start typing.
+It starts your normal Claude Code session **and** captures every speech bubble your buddy makes.
 
 You can tag sessions with a profile (for intent-based filtering):
 ```bash
@@ -249,16 +248,8 @@ Available tools:
 
 The tools do not mutate captured bubbles, mattered marks, or review state. Successful tool calls do update `usage.json` so Glimmer can track explicit local revisit activity.
 
-### Start With a Brief
-Since v0.4.0, Glimmer automatically injects a text summary of mattered bubbles into every Claude session's system prompt:
-
-```bash
-# Automatic (no flag needed)
-glimmer-claude
-# Summary appears in system context, one-time per session
-```
-
-If you want to see briefs in other contexts, you have three more paths:
+### See a Brief Before Starting
+You can review a project brief before starting work:
 
 ```bash
 # In the terminal
@@ -268,13 +259,13 @@ glimmer-log --brief --markdown
 # In the local app
 glimmer-ui
 
-# Before starting Claude (if you want to read it first)
+# Printed before Claude starts
 glimmer-claude --glimmer-brief
 ```
 
 The brief pulls from the same local mattered/review/recurrence/staleness data as the UI and API. It answers one question quickly: what should I remember before I continue here, and what is fading enough to bring back now?
 
-When you tag sessions with a profile (`--profile pet`, etc.), the injected brief is filtered to show only bubbles from that profile — so pet sessions get buddy-care history, work sessions get work context.
+When you tag sessions with a profile (`--profile pet`, etc.), the brief is filtered to show only bubbles from that profile.
 
 ### Explicit Local Usage Tracking
 Glimmer now keeps a local `usage.json` summary alongside the archive. This is intentionally narrow and explicit:
@@ -341,8 +332,7 @@ Permissions are tightened to user-only by default. `usage.json` records explicit
 
 > *phases through the terminal screen* Local ghosts stay local. Logs forget us.
 
-- **`glimmer-claude`** starts Claude inside `script`, optionally reads or resolves a session profile (`--profile`, `GLIMMER_PROFILE`, or `.glimmer-profile` file), writes a session manifest, calls `glimmer-context.py` to generate a text summary of mattered bubbles filtered by profile (if set), and injects it into Claude's system prompt via `--append-system-prompt-file`, then launches the watcher.
-- **`glimmer-context.py`** generates a markdown brief of mattered bubbles (filtered by session profile if set), writes it to a 0600 temp file, and records the access as `auto.session_start` usage.
+- **`glimmer-claude`** starts Claude inside `script`, optionally reads or resolves a session profile (`--profile`, `GLIMMER_PROFILE`, or `.glimmer-profile` file), writes a session manifest, then launches the watcher.
 - **`glimmer-watcher.py`** tails the raw terminal capture, strips ANSI control sequences, finds speech bubbles, waits for stable text, copies the session profile onto each captured event, and writes logs.
 - **`glimmer-log`** reads the plain history or the richer sidecar metadata, and can build project briefs (with optional profile filtering).
 - **`glimmer-ui`** serves the local archive app with mattered marks, review state, recurrence cues, profile-filtered search, and a localhost JSON API.
@@ -425,7 +415,6 @@ Longest: "This is a really detailed explanation of why your approach..."
 ✅ **Deduplication** — Won't log the same bubble twice  
 ✅ **Session-aware** — New runs get their own session IDs and manifests  
 ✅ **Profile tagging** — Tag sessions by intent (pet, work, ambient) for context-aware filtering  
-✅ **Auto-context injection** — Text summary of mattered bubbles is injected into Claude's system prompt at session start  
 ✅ **Profile-aware briefs** — Filter context by session profile so each session gets the right history  
 ✅ **Trigger tagging** — Exact `/buddy pet` and best-effort post-prompt attribution  
 ✅ **Cleaner terminal UI** — Watcher debug output is separate by default  
