@@ -143,6 +143,53 @@ class DetectRepoContextTests(unittest.TestCase):
             mode = stat.S_IMODE(manifest_path.stat().st_mode)
             self.assertEqual(mode, self.module.PRIVATE_FILE_MODE)
 
+    def test_write_manifest_includes_session_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sessions" / "sess-1.json"
+            self.module.write_manifest(
+                str(manifest_path),
+                "sess-1",
+                "2026-04-05T00:00:00+00:00",
+                "Glimmer",
+                "/tmp/raw",
+                tmp,
+                [],
+                session_profile="pet",
+            )
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["session_profile"], "pet")
+
+    def test_write_manifest_normalizes_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sessions" / "sess-1.json"
+            self.module.write_manifest(
+                str(manifest_path),
+                "sess-1",
+                "2026-04-05T00:00:00+00:00",
+                "Glimmer",
+                "/tmp/raw",
+                tmp,
+                [],
+                session_profile="  PET  ",
+            )
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["session_profile"], "pet")
+
+    def test_write_manifest_profile_defaults_to_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sessions" / "sess-1.json"
+            self.module.write_manifest(
+                str(manifest_path),
+                "sess-1",
+                "2026-04-05T00:00:00+00:00",
+                "Glimmer",
+                "/tmp/raw",
+                tmp,
+                [],
+            )
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertIsNone(data["session_profile"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -157,7 +157,10 @@ def write_manifest(
     raw_path: str,
     cwd: str,
     claude_args: list[str],
+    *,
+    session_profile: str | None = None,
 ) -> None:
+    _profile = (session_profile or "").strip().lower() or None
     manifest = {
         "session_id": session_id,
         "started_at": started_at,
@@ -165,6 +168,7 @@ def write_manifest(
         "companion": companion,
         "raw_path": raw_path,
         "argv": ["claude", *claude_args],
+        "session_profile": _profile,
         **detect_repo_context(cwd),
     }
     _write_private_json(Path(manifest_path), manifest)
@@ -207,6 +211,7 @@ def main() -> int:
             raw_path=sys.argv[6],
             cwd=sys.argv[7],
             claude_args=sys.argv[8:],
+            session_profile=os.environ.get("GLIMMER_SESSION_PROFILE", "") or None,
         )
         return 0
 
