@@ -1051,6 +1051,58 @@ class GlimmerUIApiTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.module.validate_remote_auth("0.0.0.0", True, None)
 
+    def test_usage_sources_includes_auto_session_start(self):
+        self.assertIn("auto.session_start", self.module.USAGE_SOURCES)
+
+    def test_build_brief_view_filters_by_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            events = [
+                {
+                    "timestamp": "2026-04-05T10:00:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "pet moment",
+                    "source": "auto",
+                    "bubble_seq": 1,
+                    "session_id": "sess-pet",
+                    "cwd": "/work/alpha",
+                    "project_root": "/work/alpha",
+                    "project_name": "alpha",
+                    "session_profile": "pet",
+                    "trigger_type": "unknown",
+                    "trigger_confidence": "none",
+                },
+                {
+                    "timestamp": "2026-04-05T10:01:00+00:00",
+                    "companion": "Glimmer",
+                    "text": "work moment",
+                    "source": "auto",
+                    "bubble_seq": 2,
+                    "session_id": "sess-work",
+                    "cwd": "/work/alpha",
+                    "project_root": "/work/alpha",
+                    "project_name": "alpha",
+                    "session_profile": None,
+                    "trigger_type": "unknown",
+                    "trigger_confidence": "none",
+                },
+            ]
+            write_jsonl(glimmer_dir / "events.jsonl", events)
+            write_jsonl(glimmer_dir / "log.jsonl", [])
+            (glimmer_dir / "sessions").mkdir()
+            index = self.module.build_index(glimmer_dir)
+            pet_brief = self.module.build_brief_view(index, project="alpha", profile="pet")
+            for bubble in pet_brief.get("top_mattered") or []:
+                self.assertEqual(bubble.get("session_profile"), "pet")
+
+    def test_build_brief_view_profile_none_no_regression(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            glimmer_dir = Path(tmp)
+            build_archive_fixture(self.module, glimmer_dir)
+            index = self.module.build_index(glimmer_dir)
+            brief = self.module.build_brief_view(index)
+            self.assertIn("top_mattered", brief)
+
 
 class GlimmerUIServerTests(unittest.TestCase):
     @classmethod

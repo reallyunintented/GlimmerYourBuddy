@@ -148,6 +148,7 @@ USAGE_SOURCES = {
     "mcp.get_review",
     "mcp.search_bubbles",
     "mcp.get_bubble",
+    "auto.session_start",
 }
 
 
@@ -1272,13 +1273,17 @@ def build_brief_view(
     session_id: str | None = None,
     cwd: str | None = None,
     limit: int = BRIEF_DEFAULT_LIMIT,
+    profile: str | None = None,
 ) -> dict:
     scope = resolve_brief_scope(index, project=project, session_id=session_id, cwd=cwd)
+    _profile = (profile or "").strip().lower() or None
     mattered = sorted(
         scope["mattered_bubbles"],
         key=lambda bubble: brief_priority_key(index, bubble),
         reverse=True,
     )
+    if _profile is not None:
+        mattered = [b for b in mattered if b.get("session_profile") == _profile]
     active_items = [
         bubble
         for bubble in mattered
